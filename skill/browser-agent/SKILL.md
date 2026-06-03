@@ -13,7 +13,13 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 |------|-------------|---------|
 | Navigate to URL | `browser_navigate(url)` | — |
 | Sense page state | `browser_get_state()` | `browser_screenshot()` |
-| Wait for element | `browser_wait_for_selector(selector)` | `browser_wait_for_url(pattern)` |
+| Semantic Click | `browser_click_text(text, type='button')` | `browser_click(selector)` |
+| Fill whole form | `browser_fill_form(data={...})` | `browser_type()` |
+| Manage Tabs | `browser_new_tab()`, `browser_list_tabs()`, `browser_switch_tab(index)` | — |
+| Wait for stable | `browser_wait_until_stable()` | `browser_wait(3000)` |
+| Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
+| Session Mgmt | `browser_save_session(name)`, `browser_load_session(name)` | — |
+| Agent Profile | `browser_set_agent_profile(profile='stealth')` | — |
 | Click element | `browser_click(selector)` | `browser_click(x, y)` |
 | Type text | `browser_type(selector, text, delay=120)` | — |
 | Select dropdown | `browser_select(selector, value)` | `browser_evaluate(...)` |

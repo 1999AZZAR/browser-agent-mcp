@@ -1,8 +1,14 @@
-const { getPage, closeBrowser } = require('../core/browser');
+const { getPage, closeBrowser, listPages, switchPage, newPage } = require('../core/browser');
 const { captureState } = require('../core/state');
+const fs = require('fs');
+const path = require('path');
+
+const AGENT_CONFIG = {
+    profile: 'stealth', // 'stealth' or 'speed'
+};
 
 const TOOLS = [
-    // ── Navigation ────────────────────────────────────────────────────────────
+    // ── Navigation & Tabs ─────────────────────────────────────────────────────
     {
         name: 'browser_navigate',
         description: 'Navigate to a URL.',
@@ -10,6 +16,36 @@ const TOOLS = [
             type: 'object',
             properties: { url: { type: 'string' } },
             required: ['url'],
+        },
+    },
+    {
+        name: 'browser_new_tab',
+        description: 'Open a new browser tab.',
+        inputSchema: {
+            type: 'object',
+            properties: { url: { type: 'string' } },
+        },
+    },
+    {
+        name: 'browser_list_tabs',
+        description: 'List all open browser tabs.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_switch_tab',
+        description: 'Switch to a specific tab by index.',
+        inputSchema: {
+            type: 'object',
+            properties: { index: { type: 'number' } },
+            required: ['index'],
+        },
+    },
+    {
+        name: 'browser_wait_until_stable',
+        description: 'Wait for the page to reach a stable state (networkidle).',
+        inputSchema: {
+            type: 'object',
+            properties: { timeout: { type: 'number', default: 30000 } },
         },
     },
     {
@@ -72,6 +108,30 @@ const TOOLS = [
                 x: { type: 'number' },
                 y: { type: 'number' },
             },
+        },
+    },
+    {
+        name: 'browser_click_text',
+        description: 'Click an element containing specific text.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                text: { type: 'string' },
+                type: { type: 'string', enum: ['button', 'link', 'any'], default: 'any' },
+            },
+            required: ['text'],
+        },
+    },
+    {
+        name: 'browser_fill_form',
+        description: 'Fill multiple form fields at once.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                data: { type: 'object', description: 'Key-value pairs of selector: value' },
+                submit: { type: 'boolean', default: false, description: 'Whether to press Enter after filling' },
+            },
+            required: ['data'],
         },
     },
     {
@@ -280,9 +340,50 @@ const TOOLS = [
         },
     },
     {
+        name: 'browser_extract_table',
+        description: 'Extract data from an HTML table into JSON.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector for the table' },
+                header: { type: 'boolean', default: true, description: 'Whether the first row is a header' },
+            },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_save_session',
+        description: 'Save the current session (cookies) with a name.',
+        inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+        },
+    },
+    {
+        name: 'browser_load_session',
+        description: 'Load a previously saved session (cookies).',
+        inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+        },
+    },
+    {
         name: 'browser_close',
         description: 'Close the browser session and clear state.',
         inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_set_agent_profile',
+        description: 'Set the agent behavior profile.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                profile: { type: 'string', enum: ['stealth', 'speed'], default: 'stealth' },
+            },
+            required: ['profile'],
+        },
     },
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -301,6 +402,22 @@ async function handleToolCall(name, args) {
         case 'browser_navigate':
             await page.goto(args.url, { waitUntil: 'load' });
             return { content: [{ type: 'text', text: `Navigated to ${args.url}` }] };
+        case 'browser_new_tab': {
+            const newPg = await newPage();
+            if (args.url) await newPg.goto(args.url, { waitUntil: 'load' });
+            return { content: [{ type: 'text', text: `Opened new tab${args.url ? ' at ' + args.url : ''}.` }] };
+        }
+        case 'browser_list_tabs': {
+            const pages = await listPages();
+            return { content: [{ type: 'text', text: JSON.stringify(pages, null, 2) }] };
+        }
+        case 'browser_switch_tab': {
+            const success = await switchPage(args.index);
+            return { content: [{ type: 'text', text: success ? `Switched to tab ${args.index}.` : `Failed to switch to tab ${args.index}.` }] };
+        }
+        case 'browser_wait_until_stable':
+            await page.waitForLoadState('networkidle', { timeout: args.timeout || 30000 });
+            return { content: [{ type: 'text', text: 'Page state is stable.' }] };
         case 'browser_back':
             await page.goBack({ waitUntil: 'load' });
             return { content: [{ type: 'text', text: 'Navigated back.' }] };
@@ -331,6 +448,19 @@ async function handleToolCall(name, args) {
             if (args.selector) await page.click(args.selector, { force: true });
             else await page.mouse.click(args.x, args.y);
             return { content: [{ type: 'text', text: 'Clicked.' }] };
+        case 'browser_click_text': {
+            const baseSelector = args.type === 'button' ? 'button, [role="button"]' : args.type === 'link' ? 'a, [role="link"]' : '*';
+            const selector = `${baseSelector}:has-text("${args.text}")`;
+            await page.click(selector, { force: true });
+            return { content: [{ type: 'text', text: `Clicked element with text "${args.text}".` }] };
+        }
+        case 'browser_fill_form': {
+            for (const [sel, val] of Object.entries(args.data)) {
+                await page.fill(sel, val);
+            }
+            if (args.submit) await page.keyboard.press('Enter');
+            return { content: [{ type: 'text', text: `Filled ${Object.keys(args.data).length} fields${args.submit ? ' and submitted' : ''}.` }] };
+        }
         case 'browser_double_click':
             if (args.selector) await page.dblclick(args.selector);
             else await page.mouse.dblclick(args.x, args.y);
@@ -367,9 +497,11 @@ async function handleToolCall(name, args) {
         }
 
         // Forms
-        case 'browser_type':
-            await page.type(args.selector, args.text, { delay: args.delay || 50 });
-            return { content: [{ type: 'text', text: `Typed "${args.text}" with ${args.delay || 50}ms delay.` }] };
+        case 'browser_type': {
+            const delay = args.delay || (AGENT_CONFIG.profile === 'stealth' ? 120 : 10);
+            await page.type(args.selector, args.text, { delay });
+            return { content: [{ type: 'text', text: `Typed "${args.text}" with ${delay}ms delay.` }] };
+        }
         case 'browser_clear':
             await page.fill(args.selector, '');
             return { content: [{ type: 'text', text: 'Cleared.' }] };
@@ -431,9 +563,49 @@ async function handleToolCall(name, args) {
             const result = await page.evaluate(args.script);
             return { content: [{ type: 'text', text: JSON.stringify(result) }] };
         }
+        case 'browser_extract_table': {
+            const data = await page.evaluate(({ sel, hasHeader }) => {
+                const table = document.querySelector(sel);
+                if (!table) return null;
+                const rows = Array.from(table.querySelectorAll('tr'));
+                return rows.map(row => Array.from(row.querySelectorAll('td, th')).map(cell => cell.innerText.trim()));
+            }, { sel: args.selector, hasHeader: args.header });
+            
+            if (!data) return { content: [{ type: 'text', text: 'Table not found.' }] };
+            
+            if (args.header && data.length > 0) {
+                const headers = data[0];
+                const body = data.slice(1);
+                const structured = body.map(row => {
+                    const obj = {};
+                    headers.forEach((h, i) => { obj[h || `col${i}`] = row[i]; });
+                    return obj;
+                });
+                return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }] };
+            }
+            return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        }
+        case 'browser_save_session': {
+            const cookies = await page.context().cookies();
+            const sessionDir = path.join(__dirname, '../../sessions');
+            if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+            fs.writeFileSync(path.join(sessionDir, `${args.name}.json`), JSON.stringify(cookies, null, 2));
+            return { content: [{ type: 'text', text: `Session "${args.name}" saved.` }] };
+        }
+        case 'browser_load_session': {
+            const sessionPath = path.join(__dirname, '../../sessions', `${args.name}.json`);
+            if (!fs.existsSync(sessionPath)) return { content: [{ type: 'text', text: `Session "${args.name}" not found.` }] };
+            const cookies = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+            await page.context().addCookies(cookies);
+            return { content: [{ type: 'text', text: `Session "${args.name}" loaded.` }] };
+        }
         case 'browser_close': {
             await closeBrowser();
             return { content: [{ type: 'text', text: 'Browser session closed.' }] };
+        }
+        case 'browser_set_agent_profile': {
+            AGENT_CONFIG.profile = args.profile;
+            return { content: [{ type: 'text', text: `Agent profile set to ${args.profile}.` }] };
         }
 
         // Helpers

@@ -11,4 +11,6 @@ stage1.png
 stage2.png
 quiz_debug.html
 .session-state.json
-.quiz-results.jsoncookies.json
+.quiz-results.json
+cookies.json
+sessions/

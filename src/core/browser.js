@@ -8,7 +8,7 @@ const CONFIG = {
 };
 
 let browserContext = null;
-let page = null;
+let activePage = null;
 
 async function getBrowserContext() {
     // If context exists, verify it's still connected
@@ -18,7 +18,7 @@ async function getBrowserContext() {
         } catch (e) {
             console.error('[Browser] Existing context is closed. Relaunching...');
             browserContext = null;
-            page = null;
+            activePage = null;
         }
     }
 
@@ -33,7 +33,7 @@ async function getBrowserContext() {
         browserContext = await chromium.launchPersistentContext(CONFIG.userDataDir, {
             headless: false,
             viewport: CONFIG.viewport,
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -63,7 +63,7 @@ async function getBrowserContext() {
         // Handle context close
         browserContext.on('close', () => {
             browserContext = null;
-            page = null;
+            activePage = null;
         });
     }
     return browserContext;
@@ -71,29 +71,64 @@ async function getBrowserContext() {
 
 async function getPage() {
     const ctx = await getBrowserContext();
-    if (!page || page.isClosed()) {
+    if (!activePage || activePage.isClosed()) {
         const pages = ctx.pages();
-        page = pages.length > 0 ? pages[0] : await ctx.newPage();
-        
-        // Auto-accept native browser dialogs
-        page.on('dialog', async (dialog) => {
-            console.error(`[Browser] Native dialog [${dialog.type()}]: "${dialog.message()}" — auto-accepting`);
-            try { await dialog.accept(); } catch (_) {}
-        });
+        activePage = pages.length > 0 ? pages[0] : await ctx.newPage();
+        setupPage(activePage);
     }
-    return page;
+    return activePage;
+}
+
+function setupPage(page) {
+    // Auto-accept native browser dialogs
+    page.on('dialog', async (dialog) => {
+        console.error(`[Browser] Native dialog [${dialog.type()}]: "${dialog.message()}" — auto-accepting`);
+        try { await dialog.accept(); } catch (_) {}
+    });
+}
+
+async function listPages() {
+    const ctx = await getBrowserContext();
+    const pages = ctx.pages();
+    return pages.map((p, i) => ({
+        index: i,
+        title: p.title() || 'Loading...',
+        url: p.url(),
+        active: p === activePage
+    }));
+}
+
+async function switchPage(index) {
+    const ctx = await getBrowserContext();
+    const pages = ctx.pages();
+    if (index >= 0 && index < pages.length) {
+        activePage = pages[index];
+        await activePage.bringToFront();
+        return true;
+    }
+    return false;
+}
+
+async function newPage() {
+    const ctx = await getBrowserContext();
+    activePage = await ctx.newPage();
+    setupPage(activePage);
+    return activePage;
 }
 
 async function closeBrowser() {
     if (browserContext) {
         await browserContext.close();
         browserContext = null;
-        page = null;
+        activePage = null;
     }
 }
 
 module.exports = {
     getPage,
     getBrowserContext,
-    closeBrowser
+    closeBrowser,
+    listPages,
+    switchPage,
+    newPage
 };
