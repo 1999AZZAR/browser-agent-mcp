@@ -1,7 +1,7 @@
-const { INTERACTIVE_SELECTOR, MAIN_CONTENT_SELECTORS } = require('../utils/selectors');
+const { INTERACTIVE_SELECTOR, MAIN_CONTENT_SELECTORS, CAPTCHA_SELECTORS } = require('../utils/selectors');
 
 async function captureState(page) {
-    const state = await page.evaluate(({ interactiveSelector, mainSelectors }) => {
+    const state = await page.evaluate(({ interactiveSelector, mainSelectors, captchaSelectors }) => {
         // Find main content root
         const root = mainSelectors.reduce((found, sel) => found || document.querySelector(sel), null) || document.body;
 
@@ -54,6 +54,9 @@ async function captureState(page) {
                 };
             }).filter(Boolean);
 
+        // CAPTCHA Detection
+        const captchaDetected = !!document.querySelector(captchaSelectors);
+
         return {
             url: location.href,
             title: document.title,
@@ -61,8 +64,13 @@ async function captureState(page) {
             text: blocks.join('\n').substring(0, 5000),
             elements,
             popups: popups.length ? popups : undefined,
+            captchaDetected
         };
-    }, { interactiveSelector: INTERACTIVE_SELECTOR, mainSelectors: MAIN_CONTENT_SELECTORS });
+    }, { 
+        interactiveSelector: INTERACTIVE_SELECTOR, 
+        mainSelectors: MAIN_CONTENT_SELECTORS,
+        captchaSelectors: CAPTCHA_SELECTORS 
+    });
 
     let axTree = null;
     try { axTree = await page.accessibility.snapshot({ interestingOnly: true }); } catch (_) {}

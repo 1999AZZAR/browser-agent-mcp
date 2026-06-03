@@ -19,7 +19,16 @@ const MAIN_CONTENT_SELECTORS = [
     'body' // Fallback
 ];
 
+const CAPTCHA_SELECTORS = [
+    '.g-recaptcha', 'iframe[src*="recaptcha"]',
+    '.h-captcha', 'iframe[src*="hcaptcha"]',
+    '#captcha-form', '#captcha', '.captcha',
+    'iframe[title*="reCAPTCHA"]', 'iframe[title*="hCaptcha"]',
+    'div[id*="captcha"]', 'img[src*="captcha"]'
+].join(', ');
+
 module.exports = {
     INTERACTIVE_SELECTOR,
-    MAIN_CONTENT_SELECTORS
+    MAIN_CONTENT_SELECTORS,
+    CAPTCHA_SELECTORS
 };

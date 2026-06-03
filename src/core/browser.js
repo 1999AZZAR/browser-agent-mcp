@@ -90,12 +90,17 @@ function setupPage(page) {
 async function listPages() {
     const ctx = await getBrowserContext();
     const pages = ctx.pages();
-    return pages.map((p, i) => ({
-        index: i,
-        title: p.title() || 'Loading...',
-        url: p.url(),
-        active: p === activePage
-    }));
+    const result = [];
+    for (let i = 0; i < pages.length; i++) {
+        const p = pages[i];
+        result.push({
+            index: i,
+            title: await p.title().catch(() => 'Error'),
+            url: p.url(),
+            active: p === activePage
+        });
+    }
+    return result;
 }
 
 async function switchPage(index) {

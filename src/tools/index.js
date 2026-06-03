@@ -385,6 +385,17 @@ const TOOLS = [
             required: ['profile'],
         },
     },
+    {
+        name: 'browser_handle_captcha',
+        description: 'Attempt to detect and handle CAPTCHA challenges.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                wait: { type: 'boolean', default: true, description: 'Whether to wait for manual solving if automated attempt fails.' },
+                timeout: { type: 'number', default: 60000, description: 'Max time to wait for manual solving (ms).' }
+            }
+        },
+    },
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     {
@@ -409,7 +420,8 @@ async function handleToolCall(name, args) {
         }
         case 'browser_list_tabs': {
             const pages = await listPages();
-            return { content: [{ type: 'text', text: JSON.stringify(pages, null, 2) }] };
+            const text = pages.map(p => `[${p.index}] ${p.active ? '*' : ' '} ${p.title} (${p.url})`).join('\n');
+            return { content: [{ type: 'text', text }] };
         }
         case 'browser_switch_tab': {
             const success = await switchPage(args.index);
@@ -557,7 +569,7 @@ async function handleToolCall(name, args) {
         }
         case 'browser_get_cookies': {
             const cookies = await page.context().cookies();
-            return { content: [{ type: 'text', text: JSON.stringify(cookies, null, 2) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ cookies }, null, 2) }] };
         }
         case 'browser_evaluate': {
             const result = await page.evaluate(args.script);
@@ -581,9 +593,9 @@ async function handleToolCall(name, args) {
                     headers.forEach((h, i) => { obj[h || `col${i}`] = row[i]; });
                     return obj;
                 });
-                return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }] };
+                return { content: [{ type: 'text', text: JSON.stringify({ table: structured }, null, 2) }] };
             }
-            return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ table: data }, null, 2) }] };
         }
         case 'browser_save_session': {
             const cookies = await page.context().cookies();
@@ -606,6 +618,38 @@ async function handleToolCall(name, args) {
         case 'browser_set_agent_profile': {
             AGENT_CONFIG.profile = args.profile;
             return { content: [{ type: 'text', text: `Agent profile set to ${args.profile}.` }] };
+        }
+        case 'browser_handle_captcha': {
+            const { CAPTCHA_SELECTORS } = require('../utils/selectors');
+            const detected = await page.evaluate((sel) => !!document.querySelector(sel), CAPTCHA_SELECTORS);
+            
+            if (!detected) return { content: [{ type: 'text', text: 'No CAPTCHA detected.' }] };
+
+            // Try to find and click reCAPTCHA checkbox
+            const solved = await page.evaluate(async () => {
+                const checkbox = document.querySelector('iframe[src*="recaptcha"]')?.contentWindow?.document?.querySelector('.recaptcha-checkbox-border');
+                if (checkbox) {
+                    checkbox.click();
+                    return true;
+                }
+                return false;
+            }).catch(() => false);
+
+            if (solved) {
+                return { content: [{ type: 'text', text: 'CAPTCHA checkbox clicked. Checking if solved...' }] };
+            }
+
+            if (args.wait) {
+                try {
+                    console.error('[Browser] CAPTCHA detected. Waiting for manual solving...');
+                    await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: args.timeout || 60000 });
+                    return { content: [{ type: 'text', text: 'CAPTCHA resolved (manual intervention detected).' }] };
+                } catch (e) {
+                    return { content: [{ type: 'text', text: 'Timeout waiting for CAPTCHA to be solved manually.' }], isError: true };
+                }
+            }
+
+            return { content: [{ type: 'text', text: 'CAPTCHA detected. Manual intervention required.' }], isError: true };
         }
 
         // Helpers

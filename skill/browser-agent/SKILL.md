@@ -20,6 +20,7 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
 | Session Mgmt | `browser_save_session(name)`, `browser_load_session(name)` | — |
 | Agent Profile | `browser_set_agent_profile(profile='stealth')` | — |
+| Handle CAPTCHA | `browser_handle_captcha(wait=true)` | — |
 | Click element | `browser_click(selector)` | `browser_click(x, y)` |
 | Type text | `browser_type(selector, text, delay=120)` | — |
 | Select dropdown | `browser_select(selector, value)` | `browser_evaluate(...)` |

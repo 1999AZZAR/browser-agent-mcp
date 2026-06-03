@@ -6,6 +6,7 @@ A modular, high-performance browser automation agent implemented as a Model Cont
 
 - **Semantic Interaction**: Click elements by text (`browser_click_text`) and fill entire forms (`browser_fill_form`) with single commands.
 - **Multi-Tab Management**: Handle multiple sites simultaneously with tab list, switch, and creation tools.
+- **CAPTCHA Management**: Automated detection and assisted resolution for reCAPTCHA, hCaptcha, and common challenge pages.
 - **Session & Persistence**: Support for persistent browser contexts and explicit session saving/loading (`cookies.json` and named sessions).
 - **Stealth and Evasion**: Advanced anti-detection, custom behavioral profiles (`stealth` vs `speed`), and realistic user-agent spoofing.
 - **Robust State Capture**: Extracts semantic page data including Accessibility Trees (AX Tree), interactive elements, and structural headings.
@@ -46,6 +47,7 @@ The agent exposes 40+ specialized tools categorized for the full automation life
 ### Session & Profile Management
 - `browser_save_session`: Save current cookies to a named file.
 - `browser_load_session`: Load cookies from a named file.
+- `browser_handle_captcha`: Detect and manage CAPTCHA challenges with optional manual hand-off.
 - `browser_set_agent_profile`: Toggle between `stealth` (high-delay, human-like) and `speed` (low-delay) behavior.
 - `browser_close`: Terminate the browser session and clear state.
 
