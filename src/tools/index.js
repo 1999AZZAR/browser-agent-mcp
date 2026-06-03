@@ -107,6 +107,7 @@ const TOOLS = [
                 selector: { type: 'string' },
                 x: { type: 'number' },
                 y: { type: 'number' },
+                delay: { type: 'number', description: 'Delay between mousedown and mouseup (ms)' }
             },
         },
     },
@@ -396,6 +397,19 @@ const TOOLS = [
             }
         },
     },
+    {
+        name: 'browser_solve_captcha_grid',
+        description: 'Solve a visual CAPTCHA by clicking specific grid indices.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                indices: { type: 'array', items: { type: 'number' }, description: '1-based indices of the grid to click.' },
+                gridSize: { type: 'number', enum: [3, 4], default: 3, description: 'Size of the grid (3x3 or 4x4).' },
+                action: { type: 'string', enum: ['verify', 'next', 'skip'], default: 'verify', description: 'Action button to click after selecting images.' }
+            },
+            required: ['indices'],
+        },
+    },
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     {
@@ -456,10 +470,27 @@ async function handleToolCall(name, args) {
         }
 
         // Interaction
-        case 'browser_click':
-            if (args.selector) await page.click(args.selector, { force: true });
-            else await page.mouse.click(args.x, args.y);
-            return { content: [{ type: 'text', text: 'Clicked.' }] };
+        case 'browser_click': {
+            const delay = args.delay || (AGENT_CONFIG.profile === 'stealth' ? Math.floor(Math.random() * 100) + 50 : 0);
+            
+            if (AGENT_CONFIG.profile === 'stealth') {
+                // Random small move before click to simulate human jitter
+                const jitterX = (Math.random() - 0.5) * 4;
+                const jitterY = (Math.random() - 0.5) * 4;
+                
+                if (args.selector) {
+                    const box = await page.locator(args.selector).boundingBox();
+                    if (box) await page.mouse.move(box.x + box.width / 2 + jitterX, box.y + box.height / 2 + jitterY, { steps: 5 });
+                } else if (args.x !== undefined && args.y !== undefined) {
+                    await page.mouse.move(args.x + jitterX, args.y + jitterY, { steps: 5 });
+                }
+                await page.waitForTimeout(Math.random() * 200 + 100);
+            }
+
+            if (args.selector) await page.click(args.selector, { force: true, delay });
+            else await page.mouse.click(args.x, args.y, { delay });
+            return { content: [{ type: 'text', text: `Clicked with ${delay}ms delay.` }] };
+        }
         case 'browser_click_text': {
             const baseSelector = args.type === 'button' ? 'button, [role="button"]' : args.type === 'link' ? 'a, [role="link"]' : '*';
             const selector = `${baseSelector}:has-text("${args.text}")`;
@@ -611,6 +642,47 @@ async function handleToolCall(name, args) {
             await page.context().addCookies(cookies);
             return { content: [{ type: 'text', text: `Session "${args.name}" loaded.` }] };
         }
+        case 'browser_solve_captcha_grid': {
+            const challengeFrame = await page.waitForSelector('iframe[src*="bframe"]', { timeout: 5000 }).catch(() => null);
+            if (!challengeFrame) return { content: [{ type: 'text', text: 'Challenge frame not found.' }], isError: true };
+            
+            const rect = await challengeFrame.boundingBox();
+            if (!rect) return { content: [{ type: 'text', text: 'Could not determine challenge frame position.' }], isError: true };
+
+            const { gridSize, indices, action } = args;
+            const margin = 15; // padding inside frame
+            const gridWidth = 400 - (margin * 2);
+            const gridHeight = 400 - (margin * 2); // Images usually in top 400px
+            const cellSize = gridWidth / gridSize;
+
+            const results = [];
+            for (const index of indices) {
+                const row = Math.floor((index - 1) / gridSize);
+                const col = (index - 1) % gridSize;
+                
+                const centerX = rect.x + margin + (col * cellSize) + (cellSize / 2);
+                const centerY = rect.y + margin + (row * cellSize) + (cellSize / 2);
+                
+                // Add human jitter
+                const clickX = centerX + (Math.random() - 0.5) * 10;
+                const clickY = centerY + (Math.random() - 0.5) * 10;
+
+                await page.mouse.move(clickX, clickY, { steps: 10 });
+                await page.waitForTimeout(Math.random() * 300 + 200);
+                await page.mouse.click(clickX, clickY, { delay: Math.random() * 200 + 100 });
+                results.push(index);
+                await page.waitForTimeout(Math.random() * 500 + 300);
+            }
+
+            // Click action button
+            const actionX = rect.x + (action === 'verify' ? 330 : 330); // Approximate verify button location
+            const actionY = rect.y + 540;
+            await page.mouse.move(actionX, actionY, { steps: 10 });
+            await page.waitForTimeout(Math.random() * 400 + 200);
+            await page.mouse.click(actionX, actionY, { delay: Math.random() * 200 + 150 });
+
+            return { content: [{ type: 'text', text: `Clicked indices ${results.join(', ')} and clicked "${action}".` }] };
+        }
         case 'browser_close': {
             await closeBrowser();
             return { content: [{ type: 'text', text: 'Browser session closed.' }] };
@@ -636,12 +708,18 @@ async function handleToolCall(name, args) {
             }).catch(() => false);
 
             if (solved) {
-                return { content: [{ type: 'text', text: 'CAPTCHA checkbox clicked. Checking if solved...' }] };
+                console.error('[Browser] CAPTCHA checkbox clicked. Checking for immediate resolution...');
+                try {
+                    await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: 5000 });
+                    return { content: [{ type: 'text', text: 'CAPTCHA solved automatically.' }] };
+                } catch (e) {
+                    console.error('[Browser] CAPTCHA still present after click. Full challenge likely required.');
+                }
             }
 
             if (args.wait) {
                 try {
-                    console.error('[Browser] CAPTCHA detected. Waiting for manual solving...');
+                    console.error('[Browser] CAPTCHA detected or challenge appeared. Waiting for manual solving...');
                     await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: args.timeout || 60000 });
                     return { content: [{ type: 'text', text: 'CAPTCHA resolved (manual intervention detected).' }] };
                 } catch (e) {
