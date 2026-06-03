@@ -239,8 +239,35 @@ const TOOLS = [
         },
     },
     {
+        name: 'browser_get_html',
+        description: 'Get the full HTML content of the page or a specific element.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'Optional selector to get innerHTML of.' },
+            },
+        },
+    },
+    {
         name: 'browser_screenshot',
         description: 'Take a screenshot.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_print_to_pdf',
+        description: 'Print the current page to a PDF file.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                landscape: { type: 'boolean', default: false },
+                printBackground: { type: 'boolean', default: true },
+                format: { type: 'string', default: 'A4' },
+            },
+        },
+    },
+    {
+        name: 'browser_get_cookies',
+        description: 'Get current browser cookies for the active page.',
         inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -373,9 +400,27 @@ async function handleToolCall(name, args) {
             const text = await page.evaluate((sel) => document.querySelector(sel)?.innerText?.trim() ?? null, args.selector);
             return { content: [{ type: 'text', text: text || '(not found)' }] };
         }
+        case 'browser_get_html': {
+            const html = args.selector 
+                ? await page.evaluate((sel) => document.querySelector(sel)?.innerHTML ?? null, args.selector)
+                : await page.content();
+            return { content: [{ type: 'text', text: html || '(not found)' }] };
+        }
         case 'browser_screenshot': {
             const ss = await page.screenshot({ type: 'png' });
             return { content: [{ type: 'image', data: ss.toString('base64'), mimeType: 'image/png' }] };
+        }
+        case 'browser_print_to_pdf': {
+            const pdf = await page.pdf({
+                landscape: args.landscape,
+                printBackground: args.printBackground,
+                format: args.format,
+            });
+            return { content: [{ type: 'text', text: `PDF generated (${pdf.length} bytes). Use a resource tool if available to read binary data, or I can provide base64 if requested.` }, { type: 'text', text: `Base64: ${pdf.toString('base64').substring(0, 1000)}... (truncated)` }] };
+        }
+        case 'browser_get_cookies': {
+            const cookies = await page.context().cookies();
+            return { content: [{ type: 'text', text: JSON.stringify(cookies, null, 2) }] };
         }
         case 'browser_evaluate': {
             const result = await page.evaluate(args.script);

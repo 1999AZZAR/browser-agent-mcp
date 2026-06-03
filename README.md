@@ -9,10 +9,11 @@ A modular, high-performance browser automation agent implemented as a Model Cont
 - **Stealth and Evasion**: Implements advanced anti-detection measures by neutralizing `navigator.webdriver` flags and employing realistic user-agent spoofing.
 - **Human-Like Interaction**: Tools support randomized delays and behavioral simulation to bypass standard bot-detection heuristics.
 - **Persistence**: Supports persistent browser contexts for session maintenance across multiple interactions.
+- **High-Fidelity Observation**: Beyond screenshots, the agent can extract full HTML, generate PDF reports, and manage session cookies.
 
 ## Toolset
 
-The agent exposes 26 specialized tools categorized for the full automation lifecycle:
+The agent exposes 29 specialized tools categorized for the full automation lifecycle:
 
 ### Navigation
 - `browser_navigate`: Navigate to specified URLs with configurable wait conditions.
@@ -30,9 +31,12 @@ The agent exposes 26 specialized tools categorized for the full automation lifec
 - `browser_select`, `browser_check`, `browser_uncheck`: Specialized form control interactions.
 
 ### Observation and Analysis
-- `browser_get_state`: Unified page analysis (URL, title, elements, AX Tree).
+- `browser_get_state`: Unified page analysis (URL, title, elements, AX Tree) with integrated screenshot.
 - `browser_screenshot`: Full or viewport visual capture.
 - `browser_get_text`: Target text extraction.
+- `browser_get_html`: Full or partial structural source extraction.
+- `browser_print_to_pdf`: High-fidelity document capture.
+- `browser_get_cookies`: Session and authentication state inspection.
 - `browser_evaluate`: Execution of arbitrary JavaScript within the page context.
 
 ### Automation Helpers

@@ -11,6 +11,17 @@ let browserContext = null;
 let page = null;
 
 async function getBrowserContext() {
+    // If context exists, verify it's still connected
+    if (browserContext) {
+        try {
+            await browserContext.pages();
+        } catch (e) {
+            console.error('[Browser] Existing context is closed. Relaunching...');
+            browserContext = null;
+            page = null;
+        }
+    }
+
     if (!browserContext) {
         if (!fs.existsSync(CONFIG.userDataDir)) fs.mkdirSync(CONFIG.userDataDir, { recursive: true });
         
@@ -35,6 +46,12 @@ async function getBrowserContext() {
                 '--use-fake-ui-for-media-stream',
             ],
             ignoreDefaultArgs: ['--enable-automation'],
+        });
+
+        // Handle context close
+        browserContext.on('close', () => {
+            browserContext = null;
+            page = null;
         });
     }
     return browserContext;
