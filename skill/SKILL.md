@@ -38,24 +38,11 @@ browser_get_state() // Analyze layout and elements
 - **Structural**: `browser_get_html(selector)`
 - **Document**: `browser_print_to_pdf()`
 
-## Advanced Patterns
+## Expert References
 
-### Form Submission
-1. Navigate to form.
-2. `browser_get_state` to find all input fields.
-3. Iteratively use `browser_type` for each field.
-4. `browser_click` on the submit button.
-5. `browser_wait_for_url` or `browser_wait_for_selector` to confirm success.
-
-### Infinite Scroll / Lazy Loading
-1. Use `browser_smart_scroll(steps=5, delayMs=1000)`.
-2. Capture state to check if more content appeared.
-3. Repeat until target data is found.
-
-### Handling Modals
-1. If a tool fails due to "element intercepted", call `browser_dismiss_popups`.
-2. Re-capture state.
-3. Retry interaction.
+- [Browsing Patterns](references/browsing-patterns.md): Common navigation and data gathering flows.
+- [Stealth and Evasion](references/stealth-and-evasion.md): Standards for human-like behavior and bot bypass.
+- [Element Interaction](references/element-interaction.md): Selector strategies and AX Tree utilization.
 
 ## Tool Categories
 
