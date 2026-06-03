@@ -48,6 +48,18 @@ async function getBrowserContext() {
             ignoreDefaultArgs: ['--enable-automation'],
         });
 
+        // Inject cookies if they exist
+        const cookiesPath = path.join(__dirname, '../../cookies.json');
+        if (fs.existsSync(cookiesPath)) {
+            try {
+                const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
+                await browserContext.addCookies(cookies);
+                console.error(`[Browser] Injected ${cookies.length} cookies from cookies.json`);
+            } catch (e) {
+                console.error(`[Browser] Failed to inject cookies: ${e.message}`);
+            }
+        }
+
         // Handle context close
         browserContext.on('close', () => {
             browserContext = null;

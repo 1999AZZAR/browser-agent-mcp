@@ -1,4 +1,4 @@
-const { getPage } = require('../core/browser');
+const { getPage, closeBrowser } = require('../core/browser');
 const { captureState } = require('../core/state');
 
 const TOOLS = [
@@ -279,6 +279,11 @@ const TOOLS = [
             required: ['script'],
         },
     },
+    {
+        name: 'browser_close',
+        description: 'Close the browser session and clear state.',
+        inputSchema: { type: 'object', properties: {} },
+    },
 
     // ── Helpers ───────────────────────────────────────────────────────────────
     {
@@ -425,6 +430,10 @@ async function handleToolCall(name, args) {
         case 'browser_evaluate': {
             const result = await page.evaluate(args.script);
             return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        case 'browser_close': {
+            await closeBrowser();
+            return { content: [{ type: 'text', text: 'Browser session closed.' }] };
         }
 
         // Helpers
