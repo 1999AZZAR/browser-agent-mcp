@@ -1,0 +1,13 @@
+{
+  "name": "general-browser-agent-mcp",
+  "version": "1.0.0",
+  "description": "General-purpose browser automation agent exposed as an MCP server",
+  "main": "src/server.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": "^1.44.1"
+  },
+  "scripts": {
+    "mcp": "node src/server.js"
+  }
+}

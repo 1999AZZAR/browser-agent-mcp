@@ -1,0 +1,412 @@
+const { getPage } = require('../core/browser');
+const { captureState } = require('../core/state');
+
+const TOOLS = [
+    // ── Navigation ────────────────────────────────────────────────────────────
+    {
+        name: 'browser_navigate',
+        description: 'Navigate to a URL.',
+        inputSchema: {
+            type: 'object',
+            properties: { url: { type: 'string' } },
+            required: ['url'],
+        },
+    },
+    {
+        name: 'browser_back',
+        description: 'Navigate back in history.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_forward',
+        description: 'Navigate forward in history.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_reload',
+        description: 'Reload the current page.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_wait',
+        description: 'Wait for a specified number of milliseconds.',
+        inputSchema: {
+            type: 'object',
+            properties: { ms: { type: 'number' } },
+            required: ['ms'],
+        },
+    },
+    {
+        name: 'browser_wait_for_selector',
+        description: 'Wait for an element to appear.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                timeout: { type: 'number', default: 10000 },
+            },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_wait_for_url',
+        description: 'Wait for the URL to match a pattern.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Substring or regex (prefixed with regex:)' },
+                timeout: { type: 'number', default: 15000 },
+            },
+            required: ['pattern'],
+        },
+    },
+
+    // ── Interaction ───────────────────────────────────────────────────────────
+    {
+        name: 'browser_click',
+        description: 'Click an element.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                x: { type: 'number' },
+                y: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_double_click',
+        description: 'Double-click an element.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                x: { type: 'number' },
+                y: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_right_click',
+        description: 'Right-click an element.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                x: { type: 'number' },
+                y: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_hover',
+        description: 'Hover over an element.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                x: { type: 'number' },
+                y: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_drag',
+        description: 'Drag from source to target.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                source: { type: 'string', description: 'Source selector' },
+                target: { type: 'string', description: 'Target selector' },
+            },
+            required: ['source', 'target'],
+        },
+    },
+    {
+        name: 'browser_scroll',
+        description: 'Scroll the page.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                direction: { type: 'string', enum: ['up', 'down'], default: 'down' },
+                amount: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_scroll_to',
+        description: 'Scroll to an element or coordinates.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                x: { type: 'number' },
+                y: { type: 'number' },
+            },
+        },
+    },
+    {
+        name: 'browser_smart_scroll',
+        description: 'Incremental scroll to trigger lazy loading.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                steps: { type: 'number', default: 5 },
+                delayMs: { type: 'number', default: 800 },
+            },
+        },
+    },
+
+    // ── Forms & Input ─────────────────────────────────────────────────────────
+    {
+        name: 'browser_type',
+        description: 'Type text into a field with optional human-like delay.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                text: { type: 'string' },
+                delay: { type: 'number', description: 'Delay between keypresses in ms.', default: 50 },
+            },
+            required: ['selector', 'text'],
+        },
+    },
+    {
+        name: 'browser_clear',
+        description: 'Clear an input field.',
+        inputSchema: {
+            type: 'object',
+            properties: { selector: { type: 'string' } },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_press',
+        description: 'Press a keyboard key.',
+        inputSchema: {
+            type: 'object',
+            properties: { key: { type: 'string' } },
+            required: ['key'],
+        },
+    },
+    {
+        name: 'browser_select',
+        description: 'Select an option in a dropdown.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                value: { type: 'string', description: 'Value or label text' },
+            },
+            required: ['selector', 'value'],
+        },
+    },
+    {
+        name: 'browser_check',
+        description: 'Check a checkbox or radio.',
+        inputSchema: {
+            type: 'object',
+            properties: { selector: { type: 'string' } },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_uncheck',
+        description: 'Uncheck a checkbox.',
+        inputSchema: {
+            type: 'object',
+            properties: { selector: { type: 'string' } },
+            required: ['selector'],
+        },
+    },
+
+    // ── Observation ───────────────────────────────────────────────────────────
+    {
+        name: 'browser_get_state',
+        description: 'Capture the current page state.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_get_text',
+        description: 'Read text from element(s).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string' },
+                all: { type: 'boolean', default: false },
+            },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_screenshot',
+        description: 'Take a screenshot.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_evaluate',
+        description: 'Run JavaScript in the browser.',
+        inputSchema: {
+            type: 'object',
+            properties: { script: { type: 'string' } },
+            required: ['script'],
+        },
+    },
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    {
+        name: 'browser_dismiss_popups',
+        description: 'Try to dismiss common popups and banners.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+];
+
+async function handleToolCall(name, args) {
+    const page = await getPage();
+
+    switch (name) {
+        // Navigation
+        case 'browser_navigate':
+            await page.goto(args.url, { waitUntil: 'load' });
+            return { content: [{ type: 'text', text: `Navigated to ${args.url}` }] };
+        case 'browser_back':
+            await page.goBack({ waitUntil: 'load' });
+            return { content: [{ type: 'text', text: 'Navigated back.' }] };
+        case 'browser_forward':
+            await page.goForward({ waitUntil: 'load' });
+            return { content: [{ type: 'text', text: 'Navigated forward.' }] };
+        case 'browser_reload':
+            await page.reload({ waitUntil: 'load' });
+            return { content: [{ type: 'text', text: 'Reloaded.' }] };
+        case 'browser_wait':
+            await page.waitForTimeout(args.ms);
+            return { content: [{ type: 'text', text: `Waited ${args.ms}ms.` }] };
+        case 'browser_wait_for_selector':
+            await page.waitForSelector(args.selector, { timeout: args.timeout || 10000 });
+            return { content: [{ type: 'text', text: `Selector ${args.selector} is visible.` }] };
+        case 'browser_wait_for_url': {
+            const isRegex = args.pattern.startsWith('regex:');
+            const pattern = isRegex ? args.pattern.slice(6) : args.pattern;
+            await page.waitForFunction(([pat, rx]) => {
+                const u = location.href;
+                return rx ? new RegExp(pat).test(u) : u.includes(pat);
+            }, [pattern, isRegex], { timeout: args.timeout || 15000 });
+            return { content: [{ type: 'text', text: `URL matches pattern.` }] };
+        }
+
+        // Interaction
+        case 'browser_click':
+            if (args.selector) await page.click(args.selector, { force: true });
+            else await page.mouse.click(args.x, args.y);
+            return { content: [{ type: 'text', text: 'Clicked.' }] };
+        case 'browser_double_click':
+            if (args.selector) await page.dblclick(args.selector);
+            else await page.mouse.dblclick(args.x, args.y);
+            return { content: [{ type: 'text', text: 'Double-clicked.' }] };
+        case 'browser_right_click':
+            if (args.selector) await page.click(args.selector, { button: 'right' });
+            else await page.mouse.click(args.x, args.y, { button: 'right' });
+            return { content: [{ type: 'text', text: 'Right-clicked.' }] };
+        case 'browser_hover':
+            if (args.selector) await page.hover(args.selector);
+            else await page.mouse.move(args.x, args.y);
+            return { content: [{ type: 'text', text: 'Hovered.' }] };
+        case 'browser_drag':
+            await page.dragAndDrop(args.source, args.target);
+            return { content: [{ type: 'text', text: 'Drag-and-drop executed.' }] };
+        case 'browser_scroll': {
+            const amount = args.amount || 500;
+            const delta = args.direction === 'up' ? -amount : amount;
+            await page.mouse.wheel(0, delta);
+            return { content: [{ type: 'text', text: 'Scrolled.' }] };
+        }
+        case 'browser_scroll_to':
+            if (args.selector) await page.locator(args.selector).scrollIntoViewIfNeeded();
+            else await page.evaluate(({ x, y }) => window.scrollTo(x, y), { x: args.x || 0, y: args.y || 0 });
+            return { content: [{ type: 'text', text: 'Scrolled to target.' }] };
+        case 'browser_smart_scroll': {
+            const steps = args.steps ?? 5;
+            const delay = args.delayMs ?? 800;
+            for (let i = 0; i < steps; i++) {
+                await page.evaluate(() => window.scrollBy(0, 600));
+                await page.waitForTimeout(delay);
+            }
+            return { content: [{ type: 'text', text: `Smart scroll completed (${steps} steps).` }] };
+        }
+
+        // Forms
+        case 'browser_type':
+            await page.type(args.selector, args.text, { delay: args.delay || 50 });
+            return { content: [{ type: 'text', text: `Typed "${args.text}" with ${args.delay || 50}ms delay.` }] };
+        case 'browser_clear':
+            await page.fill(args.selector, '');
+            return { content: [{ type: 'text', text: 'Cleared.' }] };
+        case 'browser_press':
+            await page.keyboard.press(args.key);
+            return { content: [{ type: 'text', text: `Pressed ${args.key}.` }] };
+        case 'browser_select':
+            await page.selectOption(args.selector, args.value);
+            return { content: [{ type: 'text', text: `Selected ${args.value}.` }] };
+        case 'browser_check':
+            await page.check(args.selector);
+            return { content: [{ type: 'text', text: 'Checked.' }] };
+        case 'browser_uncheck':
+            await page.uncheck(args.selector);
+            return { content: [{ type: 'text', text: 'Unchecked.' }] };
+
+        // Observation
+        case 'browser_get_state': {
+            const state = await captureState(page);
+            const ss = await page.screenshot({ type: 'png' });
+            return {
+                content: [
+                    { type: 'text', text: JSON.stringify(state, null, 2) },
+                    { type: 'image', data: ss.toString('base64'), mimeType: 'image/png' },
+                ],
+            };
+        }
+        case 'browser_get_text': {
+            if (args.all) {
+                const texts = await page.evaluate((sel) => Array.from(document.querySelectorAll(sel)).map(el => el.innerText.trim()).filter(Boolean), args.selector);
+                return { content: [{ type: 'text', text: texts.join('\n---\n') }] };
+            }
+            const text = await page.evaluate((sel) => document.querySelector(sel)?.innerText?.trim() ?? null, args.selector);
+            return { content: [{ type: 'text', text: text || '(not found)' }] };
+        }
+        case 'browser_screenshot': {
+            const ss = await page.screenshot({ type: 'png' });
+            return { content: [{ type: 'image', data: ss.toString('base64'), mimeType: 'image/png' }] };
+        }
+        case 'browser_evaluate': {
+            const result = await page.evaluate(args.script);
+            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+
+        // Helpers
+        case 'browser_dismiss_popups': {
+            const dismissed = await page.evaluate(() => {
+                const actions = [];
+                const swal = document.querySelector('.swal2-popup');
+                if (swal && swal.getBoundingClientRect().width > 0) {
+                    const btn = swal.querySelector('.swal2-confirm, .swal2-close, .swal2-cancel');
+                    if (btn) { btn.click(); actions.push('swal2'); }
+                }
+                document.querySelectorAll('.modal.show, [role="dialog"], [aria-modal="true"]').forEach(m => {
+                    if (m.getBoundingClientRect().width === 0) return;
+                    const close = m.querySelector('[data-dismiss="modal"], [data-bs-dismiss="modal"], button.close, .btn-close, [aria-label="Close"]');
+                    if (close) { close.click(); actions.push('modal'); }
+                });
+                return actions;
+            });
+            return { content: [{ type: 'text', text: dismissed.length ? `Dismissed: ${dismissed.join(', ')}` : 'No popups found.' }] };
+        }
+
+        default:
+            throw new Error(`Unknown tool: ${name}`);
+    }
+}
+
+module.exports = {
+    TOOLS,
+    handleToolCall
+};

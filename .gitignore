@@ -1,0 +1,14 @@
+.env
+node_modules/
+user_data/
+memory.db
+state.json
+action.json
+action.json.tmp
+state.json.tmp
+stage0.png
+stage1.png
+stage2.png
+quiz_debug.html
+.session-state.json
+.quiz-results.json
