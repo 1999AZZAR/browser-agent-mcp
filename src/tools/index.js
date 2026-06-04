@@ -5,6 +5,7 @@ const {
     saveState,
     rotateSnapshot, saveSnapshot, getCurrSnapshot, getLastSnapshot,
     getConsoleMessages, getNetworkRequests, clearConsoleMessages, clearNetworkRequests,
+    healthCheck,
 } = require('../core/browser');
 const { captureState, observeInteractable, getElementByRef } = require('../core/state');
 const cache = require('../core/cache');
@@ -542,6 +543,14 @@ const TOOLS = [
     {
         name: 'browser_clear_intercepts',
         description: 'Remove all active request intercept rules.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+
+    // ── Health & Diagnostics ───────────────────────────────────────────────────
+    {
+        name: 'browser_health',
+        description: 'Check browser health: context alive, page responsive, page count, active URL, and evaluate latency. Read-only. Use to diagnose crashes, zombie contexts, or unresponsive pages.',
+        annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
 
@@ -1565,6 +1574,12 @@ async function handleToolCall(name, args) {
         case 'browser_cache_stats': {
             const s = cache.stats();
             return { content: [{ type: 'text', text: JSON.stringify(s, null, 2) }] };
+        }
+
+        // Health
+        case 'browser_health': {
+            const health = await healthCheck();
+            return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
         }
 
         default:

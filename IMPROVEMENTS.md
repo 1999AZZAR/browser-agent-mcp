@@ -8,6 +8,8 @@
 - Retry/switch on failure
 - Toggle headless vs interactive mode for debug vs prod
 
+**Status:** ✅ Implemented — Launch uses `launchWithRetry` with exponential backoff (env: `BROWSER_LAUNCH_RETRIES`, `BROWSER_LAUNCH_BACKOFF`); tab creation uses `newPageWithRetry` that resets the context on `Target.createTarget` / protocol errors. Headless toggle via `BROWSER_HEADLESS`. Dedicated Chromium supported via `CHROMIUM_EXECUTABLE_PATH` / `CHROMIUM_CHANNEL`. Added stability flags (disable background throttling, BackForwardCache, etc.) and `browser_health` tool for runtime diagnostics.
+
 ## 2. Precision in Element Selection
 **Issue:** Ambiguous selectors (e.g., `a[href*="playwright.dev"]`) match multiple elements.
 

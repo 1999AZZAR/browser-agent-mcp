@@ -100,6 +100,7 @@ Named agents are independent pages within the same browser. Use them to parallel
 | `browser_print_to_pdf` | Save the page as a PDF file to a specified path |
 | `browser_console_messages` | Return captured browser console messages and JS errors (last 100). Filter by `type`. Pass `clear: true` to flush. |
 | `browser_network_requests` | Return captured network requests with status and timing (last 100). Filter by URL substring or `statusMin`. |
+| `browser_health` | Check browser health: context alive, page responsive, latency, active URL. Use to diagnose crashes or unresponsive pages. |
 
 **`browser_evaluate` usage:**
 ```js
@@ -194,6 +195,28 @@ Register in your MCP client config:
   }
 }
 ```
+
+### Environment Variables
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `START_URL` | — | Page to open when the session starts. |
+| `GOAL` | — | Task description exposed to MCP clients. |
+| `CHROMIUM_EXECUTABLE_PATH` | Playwright bundled | Path to a dedicated Chromium binary. If set, Playwright uses this instead of its bundled Chromium. |
+| `CHROMIUM_CHANNEL` | — | Playwright channel hint (e.g. `chromium`, `chrome`, `chrome-beta`). Ignored if `CHROMIUM_EXECUTABLE_PATH` is set. |
+| `BROWSER_HEADLESS` | `false` | Set to `true` for headless operation (CI / production). |
+| `BROWSER_LAUNCH_RETRIES` | `3` | Number of retries on browser launch failure. |
+| `BROWSER_LAUNCH_BACKOFF` | `1000` | Base delay (ms) between launch retries; doubled each retry. |
+
+### Browser Stability
+
+The browser layer is hardened for long-running sessions:
+
+- **Launch retry** with exponential backoff — if `chromium.launchPersistentContext` fails, the launcher retries up to `BROWSER_LAUNCH_RETRIES` times, doubling the wait between attempts.
+- **Tab creation retry** — if `Target.createTarget` or related protocol errors occur when opening a new tab, the context is reset and the call is retried.
+- **Context health probe** — the cached context is checked for liveness (with timeout) before reuse; dead contexts are torn down and relaunched transparently.
+- **Stability flags** — Chromium is launched with flags that disable background timer throttling, renderer backgrounding, BackForwardCache, and other features that commonly cause crashes in automation.
+- **`browser_health` tool** — returns `{ contextAlive, pageResponsive, pageCount, pageLatencyMs, activePageUrl, headless, executablePath, launchRetries }` for runtime diagnostics.
 
 ## Token-Efficient Interaction: Observe → Act
 
