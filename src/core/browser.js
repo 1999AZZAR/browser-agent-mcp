@@ -1,6 +1,10 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const { SourceMapConsumer } = require('source-map');
+
+// Cache of url → SourceMapConsumer (loaded on demand)
+const _sourceMapCache = new Map();
 
 const CONFIG = {
     userDataDir: path.join(__dirname, '../../user_data'),
@@ -216,22 +220,43 @@ async function getPage() {
     return activePage;
 }
 
+async function resolveSourceLocation(url, line, col) {
+    if (!url || !url.endsWith('.js')) return null;
+    try {
+        let consumer = _sourceMapCache.get(url);
+        if (!consumer) {
+            // Try fetching the source map
+            const mapUrl = url + '.map';
+            const resp = await fetch(mapUrl).catch(() => null);
+            if (!resp || !resp.ok) return null;
+            const rawMap = await resp.json().catch(() => null);
+            if (!rawMap) return null;
+            consumer = await new SourceMapConsumer(rawMap);
+            _sourceMapCache.set(url, consumer);
+        }
+        const pos = consumer.originalPositionFor({ line: line || 1, column: col || 0 });
+        if (pos.source) return `${pos.source}:${pos.line}:${pos.column}`;
+    } catch (_) {}
+    return null;
+}
+
 function setupPage(page) {
     page.on('dialog', async (dialog) => {
         console.error(`[Browser] Native dialog [${dialog.type()}]: "${dialog.message()}" — auto-accepting`);
         try { await dialog.accept(); } catch (_) {}
     });
 
-    // Console capture
+    // Console capture with source-map resolution
     const consoleLog = [];
     pageConsoleLog.set(page, consoleLog);
-    page.on('console', msg => {
-        consoleLog.push({
-            type: msg.type(),
-            text: msg.text(),
-            url: msg.location()?.url || undefined,
-            line: msg.location()?.lineNumber || undefined,
-        });
+    page.on('console', async msg => {
+        const loc = msg.location();
+        let resolvedLoc = loc?.url ? `${loc.url}:${loc.lineNumber || 0}` : undefined;
+        if (loc?.url && loc?.lineNumber) {
+            const mapped = await resolveSourceLocation(loc.url, loc.lineNumber, loc.columnNumber).catch(() => null);
+            if (mapped) resolvedLoc = mapped;
+        }
+        consoleLog.push({ type: msg.type(), text: msg.text(), url: resolvedLoc });
         if (consoleLog.length > MAX_LOG_ENTRIES) consoleLog.shift();
     });
     page.on('pageerror', err => {

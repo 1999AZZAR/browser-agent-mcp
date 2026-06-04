@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **55 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **61 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
@@ -49,8 +49,14 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | List intercepts | `browser_intercept_list()` | — |
 | Clear intercepts | `browser_clear_intercepts()` | — |
 | Dismiss modal | `browser_dismiss_popups()` | `browser_evaluate("el.remove()")` |
-| Console logs / JS errors | `browser_console_messages()` | — |
+| Console logs / JS errors (source-mapped) | `browser_console_messages()` | — |
 | Network request log | `browser_network_requests(filter)` | — |
+| Structured data extraction | `browser_extract_schema(schema)` | `browser_extract_table(selector)` |
+| Core Web Vitals + timing | `browser_performance()` | — |
+| Validate outcome (planner-validator) | `browser_assert(condition)` | — |
+| Generate Playwright test from session | `browser_generate_playwright_test()` | — |
+| Start fresh recording | `browser_clear_recording()` | — |
+| Action cache stats | `browser_cache_stats()` | — |
 | Get cookies | `browser_get_cookies()` | — |
 | Press key | `browser_press(key)` | — |
 | Drag element | `browser_drag(source, target)` | — |
@@ -144,7 +150,46 @@ Screenshots consume significant tokens. Use them only when the AX tree is not en
 
 In those cases, call `browser_get_state(screenshot=true)` or `browser_screenshot()` to see what the page actually looks like.
 
-`browser_observe` returns only interactable elements with `ref` numbers. Use `browser_click_ref(ref)` to act on them — skips re-snapshotting and is stable on dynamic pages.
+`browser_observe` returns only interactable elements with `ref` numbers — no headings, no text blocks, no AX tree, no image. Use `browser_click_ref(ref)` to act on them.
+
+## Planner-Validator Loop
+
+After any action that has a verifiable outcome, use `browser_assert` before continuing:
+
+```
+browser_click_text("Submit")
+→ browser_assert(condition="[role='alert']", expected="Success")
+  ✓ passed → continue
+  ✗ failed → re-plan based on what's actually on the page
+```
+
+## Schema Extraction
+
+For structured data (product info, prices, article metadata):
+
+```
+browser_extract_schema({
+  schema: {
+    properties: {
+      title:  { type: "string",  description: "page title or product name" },
+      price:  { type: "number",  description: "price in dollars" },
+      rating: { type: "string",  description: "rating score" }
+    }
+  }
+})
+```
+
+Returns typed JSON directly — more reliable than scraping raw text.
+
+## Test Generation
+
+Record a workflow then export as a replayable Playwright test:
+
+```
+browser_clear_recording()        # start fresh
+... interact with site ...
+browser_generate_playwright_test(testName="checkout_flow", outputPath="/tmp/test.spec.js")
+```
 
 ## Core Rules
 

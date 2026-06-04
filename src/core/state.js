@@ -1,5 +1,38 @@
 const { INTERACTIVE_SELECTOR, MAIN_CONTENT_SELECTORS, CAPTCHA_SELECTORS } = require('../utils/selectors');
 
+// AX roles that carry actionable or structural meaning — everything else is noise
+const KEEP_ROLES = new Set([
+    'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox',
+    'listbox', 'option', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'tab', 'tabpanel', 'treeitem', 'switch', 'slider', 'spinbutton',
+    'heading', 'banner', 'main', 'navigation', 'contentinfo', 'complementary',
+    'alert', 'alertdialog', 'dialog', 'status', 'log', 'progressbar',
+    'grid', 'row', 'columnheader', 'rowheader', 'cell', 'gridcell',
+    'img', 'figure', 'form',
+]);
+
+function pruneAxTree(node, depth = 0) {
+    if (!node || depth > 12) return null;
+    const keep = KEEP_ROLES.has(node.role) || depth === 0;
+    const children = (node.children || [])
+        .map(c => pruneAxTree(c, depth + 1))
+        .filter(Boolean);
+
+    if (!keep && !children.length) return null;
+
+    const out = {};
+    if (node.role) out.role = node.role;
+    if (node.name) out.name = node.name.substring(0, 200);
+    if (node.value !== undefined && node.value !== '') out.value = String(node.value).substring(0, 200);
+    if (node.description) out.description = node.description.substring(0, 200);
+    if (node.checked !== undefined) out.checked = node.checked;
+    if (node.disabled) out.disabled = true;
+    if (node.expanded !== undefined) out.expanded = node.expanded;
+    if (node.level) out.level = node.level;
+    if (children.length) out.children = children;
+    return out;
+}
+
 let _elementRefs = [];
 
 function storeElementRefs(elements) { _elementRefs = elements; }
@@ -80,7 +113,10 @@ async function captureState(page) {
     });
 
     let axTree = null;
-    try { axTree = await page.accessibility.snapshot({ interestingOnly: true }); } catch (_) {}
+    try {
+        const raw = await page.accessibility.snapshot({ interestingOnly: true });
+        axTree = raw ? pruneAxTree(raw) : null;
+    } catch (_) {}
     state.axTree = axTree || undefined;
 
     storeElementRefs(state.elements);

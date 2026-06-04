@@ -7,6 +7,8 @@ const {
     getConsoleMessages, getNetworkRequests, clearConsoleMessages, clearNetworkRequests,
 } = require('../core/browser');
 const { captureState, observeInteractable, getElementByRef } = require('../core/state');
+const cache = require('../core/cache');
+const recorder = require('../core/recorder');
 const fs = require('fs');
 const path = require('path');
 
@@ -312,6 +314,7 @@ const TOOLS = [
     {
         name: 'browser_get_state',
         description: 'Capture the current page state: URL, title, headings, text blocks, interactive elements (with ref numbers), AX tree, popups, and CAPTCHA status. Auto-saves snapshot for browser_state_diff. Pass screenshot=true to also include a visual screenshot — only do this when elements may be hidden from the AX tree (canvas, shadow DOM, iframes, visual-only widgets) or when layout context is needed.',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -326,6 +329,7 @@ const TOOLS = [
     {
         name: 'browser_get_text',
         description: 'Read text from element(s).',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -338,6 +342,7 @@ const TOOLS = [
     {
         name: 'browser_get_html',
         description: 'Get the full HTML content of the page or a specific element.',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -348,6 +353,7 @@ const TOOLS = [
     {
         name: 'browser_screenshot',
         description: 'Take a screenshot.',
+        annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -366,6 +372,7 @@ const TOOLS = [
     {
         name: 'browser_get_cookies',
         description: 'Get current browser cookies for the active page.',
+        annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -388,11 +395,13 @@ const TOOLS = [
     {
         name: 'browser_state_diff',
         description: 'Compare the last two AX tree snapshots (saved automatically by browser_get_state). Returns structured diff: URL/title changes, new/removed headings, element changes, popup and captcha status transitions.',
+        annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
     {
         name: 'browser_extract_table',
         description: 'Extract data from an HTML table into JSON.',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -545,6 +554,7 @@ const TOOLS = [
     {
         name: 'browser_observe',
         description: 'Return only interactable elements (buttons, inputs, links, selects) without a screenshot. Each element gets a stable `ref` number. Use before planning an action to enumerate available targets with minimal token cost — then act with browser_click_ref or browser_type.',
+        annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -563,6 +573,7 @@ const TOOLS = [
     {
         name: 'browser_console_messages',
         description: 'Return captured browser console messages and page errors (last 100). Useful for debugging — check for JS errors after interactions. Read-only.',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -579,6 +590,7 @@ const TOOLS = [
     {
         name: 'browser_network_requests',
         description: 'Return captured network requests and their response status/timing (last 100). Useful for verifying API calls, detecting failed fetches, or inspecting what URLs are being hit. Read-only.',
+        annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
@@ -587,6 +599,85 @@ const TOOLS = [
                 clear: { type: 'boolean', default: false, description: 'Clear the log after reading.' },
             },
         },
+    },
+
+    // ── Schema Extraction ─────────────────────────────────────────────────────
+    {
+        name: 'browser_extract_schema',
+        description: 'Extract structured data from the page matching a JSON schema. Provide a schema object with property names and descriptions — the tool scrapes the page and returns a typed JSON object. More reliable than text extraction for structured data (prices, tables, forms, product info).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                schema: {
+                    type: 'object',
+                    description: 'JSON Schema object describing the shape to extract. Each property should have a "description" hint for where to find it on the page.',
+                },
+                selector: {
+                    type: 'string',
+                    description: 'Optional CSS selector to scope the extraction to a specific element.',
+                },
+            },
+            required: ['schema'],
+        },
+    },
+
+    // ── Test Generation ───────────────────────────────────────────────────────
+    {
+        name: 'browser_generate_playwright_test',
+        description: 'Generate a replayable Playwright test script from the recorded actions in this session. Returns a .spec.js file content. Call browser_clear_recording first to start a fresh recording.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                testName: { type: 'string', description: 'Name for the test case.', default: 'recorded_session' },
+                outputPath: { type: 'string', description: 'Optional absolute path to save the .spec.js file.' },
+            },
+        },
+    },
+    {
+        name: 'browser_clear_recording',
+        description: 'Clear the current session action recording. Call before a workflow you want to capture as a test.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+
+    // ── Performance ───────────────────────────────────────────────────────────
+    {
+        name: 'browser_performance',
+        description: 'Return Core Web Vitals and browser performance metrics for the current page using CDP. Includes LCP, CLS, FID estimates, navigation timing, and resource counts. Read-only.',
+        annotations: { readOnlyHint: true },
+        inputSchema: { type: 'object', properties: {} },
+    },
+
+    // ── Planner-Validator ─────────────────────────────────────────────────────
+    {
+        name: 'browser_assert',
+        description: 'Validate a condition on the current page. On failure, returns what is actually present to help re-plan. Use after actions to verify outcomes before continuing.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                condition: {
+                    type: 'string',
+                    description: 'What to check — either a CSS selector that must exist, a URL pattern to match, or a JS expression returning a boolean.',
+                },
+                conditionType: {
+                    type: 'string',
+                    enum: ['selector', 'url', 'js'],
+                    default: 'selector',
+                },
+                expected: {
+                    type: 'string',
+                    description: 'For selector: optional text the element must contain. For url: pattern to match. For js: ignored (expression must return truthy).',
+                },
+            },
+            required: ['condition'],
+        },
+    },
+
+    // ── Cache Management ──────────────────────────────────────────────────────
+    {
+        name: 'browser_cache_stats',
+        description: 'Return statistics about the action selector cache (hit count, entries, stale entries). Read-only.',
+        annotations: { readOnlyHint: true },
+        inputSchema: { type: 'object', properties: {} },
     },
 ];
 
@@ -603,6 +694,7 @@ async function handleToolCall(name, args) {
                 try {
                     await page.goto(args.url, { waitUntil: 'load', timeout: 30000 });
                     await saveState();
+                    recorder.record('navigate', { url: args.url });
                     const suffix = attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : '';
                     return { content: [{ type: 'text', text: `Navigated to ${args.url}${suffix}` }] };
                 } catch (e) {
@@ -680,9 +772,25 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: `Clicked with ${delay}ms delay.` }] };
         }
         case 'browser_click_text': {
+            const hostname = new URL(page.url()).hostname;
+            const cacheKey = `click_text::${args.type || 'any'}::${args.text}`;
+            const cached = cache.get(hostname, cacheKey);
+
+            if (cached) {
+                const ok = await page.click(cached, { force: true }).then(() => true).catch(() => false);
+                if (ok) {
+                    recorder.record('click_text', { text: args.text, elType: args.type, selector: cached });
+                    return { content: [{ type: 'text', text: `Clicked "${args.text}" (cache hit: ${cached}).` }] };
+                }
+                cache.invalidate(hostname, cacheKey);
+            }
+
+            // Cache miss or stale: discover selector
             const baseSelector = args.type === 'button' ? 'button, [role="button"]' : args.type === 'link' ? 'a, [role="link"]' : '*';
             const selector = `${baseSelector}:has-text("${args.text}")`;
             await page.click(selector, { force: true });
+            cache.set(hostname, cacheKey, selector);
+            recorder.record('click_text', { text: args.text, elType: args.type, selector });
             return { content: [{ type: 'text', text: `Clicked element with text "${args.text}".` }] };
         }
         case 'browser_fill_form': {
@@ -727,10 +835,10 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: `Smart scroll completed (${steps} steps).` }] };
         }
 
-        // Forms
         case 'browser_type': {
             const delay = args.delay || (AGENT_CONFIG.profile === 'stealth' ? 120 : 10);
             await page.type(args.selector, args.text, { delay });
+            recorder.record('type', { selector: args.selector, text: args.text });
             return { content: [{ type: 'text', text: `Typed "${args.text}" with ${delay}ms delay.` }] };
         }
         case 'browser_clear':
@@ -738,15 +846,19 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: 'Cleared.' }] };
         case 'browser_press':
             await page.keyboard.press(args.key);
+            recorder.record('press', { key: args.key });
             return { content: [{ type: 'text', text: `Pressed ${args.key}.` }] };
         case 'browser_select':
             await page.selectOption(args.selector, args.value);
+            recorder.record('select', { selector: args.selector, value: args.value });
             return { content: [{ type: 'text', text: `Selected ${args.value}.` }] };
         case 'browser_check':
             await page.check(args.selector);
+            recorder.record('check', { selector: args.selector });
             return { content: [{ type: 'text', text: 'Checked.' }] };
         case 'browser_uncheck':
             await page.uncheck(args.selector);
+            recorder.record('uncheck', { selector: args.selector });
             return { content: [{ type: 'text', text: 'Unchecked.' }] };
 
         // Observation
@@ -1089,7 +1201,7 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: dismissed.length ? `Dismissed: ${dismissed.join(', ')}` : 'No popups found.' }] };
         }
 
-        // Observe / Ref-click
+        // Schema-typed extraction
         case 'browser_observe': {
             const observed = await observeInteractable(page);
             return { content: [{ type: 'text', text: JSON.stringify(observed, null, 2) }] };
@@ -1107,6 +1219,7 @@ async function handleToolCall(name, args) {
                 await page.waitForTimeout(Math.random() * 150 + 80);
             }
             await page.mouse.click(cx, cy);
+            recorder.record('click_ref', { ref: args.ref, label: el.text, x: cx, y: cy, selector: el.id ? `#${el.id}` : null });
             return { content: [{ type: 'text', text: `Clicked ref ${args.ref} (${el.tag}${label}) at (${cx}, ${cy}).` }] };
         }
 
@@ -1117,7 +1230,7 @@ async function handleToolCall(name, args) {
             if (filterType !== 'all') messages = messages.filter(m => m.type === filterType);
             if (args.clear) clearConsoleMessages(page);
             if (!messages.length) return { content: [{ type: 'text', text: 'No console messages captured.' }] };
-            const lines = messages.map(m => `[${m.type}] ${m.text}${m.url ? ` (${m.url}:${m.line || 0})` : ''}`);
+            const lines = messages.map(m => `[${m.type}] ${m.text}${m.url ? ` (${m.url})` : ''}`);
             return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
         case 'browser_network_requests': {
@@ -1128,6 +1241,172 @@ async function handleToolCall(name, args) {
             if (!requests.length) return { content: [{ type: 'text', text: 'No network requests captured.' }] };
             const lines = requests.map(r => `[${r.status}] ${r.method} ${r.url} — ${r.duration}ms ${r.contentType ? '(' + r.contentType + ')' : ''}`);
             return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        case 'browser_extract_schema': {
+            const schema = args.schema;
+            const scope = args.selector || 'body';
+            const data = await page.evaluate(({ scopeSelector, schemaProps }) => {
+                const root = document.querySelector(scopeSelector) || document.body;
+                const result = {};
+                for (const [key, def] of Object.entries(schemaProps)) {
+                    const hint = (def.description || '').toLowerCase();
+                    const type = def.type || 'string';
+
+                    // Strategy: try aria/semantic selectors guided by description hints
+                    const candidates = [];
+                    if (hint.includes('price') || hint.includes('cost')) candidates.push('[class*="price"]', '[itemprop="price"]', '[data-price]');
+                    if (hint.includes('title') || hint.includes('name')) candidates.push('h1', 'h2', '[itemprop="name"]', '[class*="title"]');
+                    if (hint.includes('description')) candidates.push('[itemprop="description"]', '[class*="description"]', '[class*="summary"]', 'p');
+                    if (hint.includes('image') || hint.includes('img')) candidates.push('img[src]', '[itemprop="image"]');
+                    if (hint.includes('url') || hint.includes('link')) candidates.push('a[href]', 'link[rel="canonical"]');
+                    if (hint.includes('rating') || hint.includes('score')) candidates.push('[itemprop="ratingValue"]', '[class*="rating"]', '[class*="score"]');
+                    if (hint.includes('author')) candidates.push('[itemprop="author"]', '[class*="author"]', '[rel="author"]');
+                    if (hint.includes('date')) candidates.push('time[datetime]', '[itemprop="datePublished"]', '[class*="date"]');
+                    // Fallback: try to find element by key name as class/id/itemprop
+                    candidates.push(`[itemprop="${key}"]`, `[class*="${key}"]`, `[id*="${key}"]`, `[data-${key}]`);
+
+                    let found = null;
+                    for (const sel of candidates) {
+                        const el = root.querySelector(sel);
+                        if (el) { found = el; break; }
+                    }
+
+                    if (!found) { result[key] = null; continue; }
+
+                    if (type === 'string' || type === 'number') {
+                        let val = found.getAttribute('content') || found.getAttribute('datetime')
+                            || found.getAttribute('data-price') || found.innerText?.trim() || found.getAttribute('src') || found.getAttribute('href') || null;
+                        if (type === 'number' && val) val = parseFloat(val.replace(/[^0-9.-]/g, '')) || null;
+                        result[key] = val;
+                    } else if (type === 'boolean') {
+                        result[key] = found !== null;
+                    } else if (type === 'array') {
+                        result[key] = Array.from(root.querySelectorAll(candidates[candidates.length - 1] || sel))
+                            .map(e => e.innerText?.trim()).filter(Boolean).slice(0, 20);
+                    } else {
+                        result[key] = found.innerText?.trim() || null;
+                    }
+                }
+                return result;
+            }, { scopeSelector: scope, schemaProps: schema.properties || schema });
+
+            return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        }
+
+        // Test generation
+        case 'browser_generate_playwright_test': {
+            const script = recorder.generate(args.testName || 'recorded_session');
+            if (!script) return { content: [{ type: 'text', text: 'No actions recorded. Interact with the browser first.' }] };
+            if (args.outputPath) {
+                const dir = path.dirname(args.outputPath);
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(args.outputPath, script);
+                return { content: [{ type: 'text', text: `Playwright test saved to ${args.outputPath}\n\n${script}` }] };
+            }
+            return { content: [{ type: 'text', text: script }] };
+        }
+        case 'browser_clear_recording': {
+            recorder.clear();
+            return { content: [{ type: 'text', text: 'Recording cleared. Subsequent actions will be recorded fresh.' }] };
+        }
+
+        // Performance / Core Web Vitals
+        case 'browser_performance': {
+            const [metrics, cwv] = await Promise.all([
+                page.evaluate(() => {
+                    const nav = performance.getEntriesByType('navigation')[0] || {};
+                    const paint = Object.fromEntries(
+                        performance.getEntriesByType('paint').map(e => [e.name.replace('first-', ''), Math.round(e.startTime)])
+                    );
+                    const resources = performance.getEntriesByType('resource');
+                    return {
+                        domContentLoaded: Math.round(nav.domContentLoadedEventEnd - nav.fetchStart) || null,
+                        load: Math.round(nav.loadEventEnd - nav.fetchStart) || null,
+                        ttfb: Math.round(nav.responseStart - nav.fetchStart) || null,
+                        paint,
+                        resourceCount: resources.length,
+                        transferSize: Math.round(resources.reduce((s, r) => s + (r.transferSize || 0), 0) / 1024),
+                    };
+                }),
+                page.evaluate(() => new Promise(resolve => {
+                    const result = {};
+                    try {
+                        new PerformanceObserver(list => {
+                            for (const entry of list.getEntries()) {
+                                if (entry.entryType === 'largest-contentful-paint') result.lcp = Math.round(entry.startTime);
+                                if (entry.entryType === 'layout-shift') result.cls = (result.cls || 0) + entry.value;
+                            }
+                        }).observe({ type: 'largest-contentful-paint', buffered: true });
+                        new PerformanceObserver(list => {
+                            for (const entry of list.getEntries()) {
+                                if (entry.entryType === 'layout-shift') result.cls = ((result.cls || 0) + entry.value);
+                            }
+                        }).observe({ type: 'layout-shift', buffered: true });
+                    } catch (_) {}
+                    setTimeout(() => resolve(result), 500);
+                })),
+            ]);
+
+            const out = { ...metrics, coreWebVitals: cwv };
+            const lcpRating = cwv.lcp ? (cwv.lcp < 2500 ? 'good' : cwv.lcp < 4000 ? 'needs-improvement' : 'poor') : 'unknown';
+            const clsRating = cwv.cls !== undefined ? (cwv.cls < 0.1 ? 'good' : cwv.cls < 0.25 ? 'needs-improvement' : 'poor') : 'unknown';
+            out.ratings = { lcp: lcpRating, cls: clsRating };
+            return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
+        }
+
+        // Planner-validator
+        case 'browser_assert': {
+            const type = args.conditionType || 'selector';
+            let passed = false;
+            let actual = null;
+
+            if (type === 'selector') {
+                const el = await page.$(args.condition);
+                if (el) {
+                    const text = await el.innerText().catch(() => '');
+                    if (args.expected) {
+                        passed = text.includes(args.expected);
+                        actual = text.trim().substring(0, 300);
+                    } else {
+                        passed = true;
+                    }
+                } else {
+                    passed = false;
+                    // Report what is near the selector's tag on the page to help re-plan
+                    const tag = args.condition.split(/[\s.#\[]/)[0] || 'div';
+                    const nearby = await page.evaluate(t => {
+                        const els = Array.from(document.querySelectorAll(t)).slice(0, 5);
+                        return els.map(e => e.outerHTML.substring(0, 200)).join('\n');
+                    }, tag).catch(() => '');
+                    actual = nearby || '(element not found, page may have changed)';
+                }
+            } else if (type === 'url') {
+                const url = page.url();
+                passed = url.includes(args.condition);
+                actual = url;
+            } else if (type === 'js') {
+                const res = await page.evaluate(expr => {
+                    // eslint-disable-next-line no-new-func
+                    return new Function(`return (${expr})`)();
+                }, args.condition).catch(e => ({ error: e.message }));
+                passed = !!res && !res.error;
+                actual = JSON.stringify(res);
+            }
+
+            if (passed) {
+                return { content: [{ type: 'text', text: `✓ Assert passed.` }] };
+            }
+            return {
+                content: [{ type: 'text', text: `✗ Assert failed.\nCondition: ${args.condition}\nActual: ${actual}` }],
+                isError: true,
+            };
+        }
+
+        // Cache management
+        case 'browser_cache_stats': {
+            const s = cache.stats();
+            return { content: [{ type: 'text', text: JSON.stringify(s, null, 2) }] };
         }
 
         default:
