@@ -49,6 +49,22 @@ const TOOLS = [
         },
     },
     {
+        name: 'browser_wait_for_load',
+        description: 'Wait for the page load event. Use instead of browser_wait_until_stable for pages with persistent WebSocket connections or polling that never reach networkidle.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                state: {
+                    type: 'string',
+                    enum: ['load', 'domcontentloaded'],
+                    default: 'load',
+                    description: '"load" waits for full page load including subresources. "domcontentloaded" fires earlier, once HTML is parsed.',
+                },
+                timeout: { type: 'number', default: 30000 },
+            },
+        },
+    },
+    {
         name: 'browser_back',
         description: 'Navigate back in history.',
         inputSchema: { type: 'object', properties: {} },
@@ -333,10 +349,18 @@ const TOOLS = [
     },
     {
         name: 'browser_evaluate',
-        description: 'Run JavaScript in the browser.',
+        description: 'Execute arbitrary JavaScript in the page context and return the result. Supports async/await, multi-statement scripts, and passing serializable data via args.',
         inputSchema: {
             type: 'object',
-            properties: { script: { type: 'string' } },
+            properties: {
+                script: {
+                    type: 'string',
+                    description: 'JS expression or statement block. Use `return` to return a value. May use `await`. Receives `args` as the first parameter.',
+                },
+                args: {
+                    description: 'Serializable value passed into the script as `args`.',
+                },
+            },
             required: ['script'],
         },
     },
@@ -354,16 +378,23 @@ const TOOLS = [
     },
     {
         name: 'browser_save_session',
-        description: 'Save the current session (cookies) with a name.',
+        description: 'Save the current session with a name. Saves cookies by default; set includeStorage=true to also capture localStorage and sessionStorage (needed for sites that store auth tokens in Web Storage instead of cookies).',
         inputSchema: {
             type: 'object',
-            properties: { name: { type: 'string' } },
+            properties: {
+                name: { type: 'string' },
+                includeStorage: {
+                    type: 'boolean',
+                    default: false,
+                    description: 'Also capture localStorage and sessionStorage.',
+                },
+            },
             required: ['name'],
         },
     },
     {
         name: 'browser_load_session',
-        description: 'Load a previously saved session (cookies).',
+        description: 'Load a previously saved session. Restores cookies and, if the session was saved with includeStorage=true, also restores localStorage and sessionStorage.',
         inputSchema: {
             type: 'object',
             properties: { name: { type: 'string' } },
@@ -444,6 +475,9 @@ async function handleToolCall(name, args) {
         case 'browser_wait_until_stable':
             await page.waitForLoadState('networkidle', { timeout: args.timeout || 30000 });
             return { content: [{ type: 'text', text: 'Page state is stable.' }] };
+        case 'browser_wait_for_load':
+            await page.waitForLoadState(args.state || 'load', { timeout: args.timeout || 30000 });
+            return { content: [{ type: 'text', text: `Page reached "${args.state || 'load'}" state.` }] };
         case 'browser_back':
             await page.goBack({ waitUntil: 'load' });
             return { content: [{ type: 'text', text: 'Navigated back.' }] };
@@ -603,8 +637,28 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: JSON.stringify({ cookies }, null, 2) }] };
         }
         case 'browser_evaluate': {
-            const result = await page.evaluate(args.script);
-            return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            const result = await page.evaluate(async ([script, scriptArgs]) => {
+                try {
+                    // eslint-disable-next-line no-new-func
+                    const fn = new Function('args', `"use strict"; return (async () => { ${script} })()`);
+                    const value = await fn(scriptArgs);
+                    return { ok: true, value };
+                } catch (e) {
+                    return { ok: false, error: e.message };
+                }
+            }, [args.script, args.args ?? null]);
+
+            if (!result.ok) {
+                return { content: [{ type: 'text', text: `Script error: ${result.error}` }], isError: true };
+            }
+
+            let output;
+            try {
+                output = result.value === undefined ? '(undefined)' : JSON.stringify(result.value, null, 2);
+            } catch (_) {
+                output = String(result.value);
+            }
+            return { content: [{ type: 'text', text: output }] };
         }
         case 'browser_extract_table': {
             const data = await page.evaluate(({ sel, hasHeader }) => {
@@ -629,17 +683,48 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: JSON.stringify({ table: data }, null, 2) }] };
         }
         case 'browser_save_session': {
-            const cookies = await page.context().cookies();
             const sessionDir = path.join(__dirname, '../../sessions');
             if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-            fs.writeFileSync(path.join(sessionDir, `${args.name}.json`), JSON.stringify(cookies, null, 2));
-            return { content: [{ type: 'text', text: `Session "${args.name}" saved.` }] };
+
+            const cookies = await page.context().cookies();
+            const sessionData = { cookies };
+
+            if (args.includeStorage) {
+                sessionData.storage = await page.evaluate(() => ({
+                    localStorage: { ...localStorage },
+                    sessionStorage: { ...sessionStorage },
+                    origin: location.origin,
+                }));
+            }
+
+            fs.writeFileSync(path.join(sessionDir, `${args.name}.json`), JSON.stringify(sessionData, null, 2));
+            const extras = args.includeStorage ? ' + localStorage/sessionStorage' : '';
+            return { content: [{ type: 'text', text: `Session "${args.name}" saved (cookies${extras}).` }] };
         }
         case 'browser_load_session': {
             const sessionPath = path.join(__dirname, '../../sessions', `${args.name}.json`);
-            if (!fs.existsSync(sessionPath)) return { content: [{ type: 'text', text: `Session "${args.name}" not found.` }] };
-            const cookies = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+            if (!fs.existsSync(sessionPath)) {
+                return { content: [{ type: 'text', text: `Session "${args.name}" not found.` }], isError: true };
+            }
+
+            const sessionData = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+
+            // Support both old format (array of cookies) and new format ({ cookies, storage })
+            const cookies = Array.isArray(sessionData) ? sessionData : sessionData.cookies;
             await page.context().addCookies(cookies);
+
+            if (!Array.isArray(sessionData) && sessionData.storage) {
+                const { localStorage: ls, sessionStorage: ss, origin } = sessionData.storage;
+                if (page.url().startsWith(origin)) {
+                    await page.evaluate(([lsData, ssData]) => {
+                        Object.entries(lsData).forEach(([k, v]) => localStorage.setItem(k, v));
+                        Object.entries(ssData).forEach(([k, v]) => sessionStorage.setItem(k, v));
+                    }, [ls, ss]);
+                    return { content: [{ type: 'text', text: `Session "${args.name}" loaded (cookies + localStorage/sessionStorage).` }] };
+                }
+                return { content: [{ type: 'text', text: `Session "${args.name}" loaded (cookies only — storage skipped: page origin mismatch with saved origin "${origin}").` }] };
+            }
+
             return { content: [{ type: 'text', text: `Session "${args.name}" loaded.` }] };
         }
         case 'browser_solve_captcha_grid': {
