@@ -9,6 +9,9 @@
     "source-map": "^0.7.6"
   },
   "scripts": {
-    "mcp": "node src/server.js"
+    "mcp": "node src/server.js",
+    "build": "echo 'No build step required for JS-only server'",
+    "test": "echo 'No tests defined yet'",
+    "clean": "echo 'Nothing to clean'"
   }
 }
