@@ -18,6 +18,10 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 - **Data Extraction**: Table-to-JSON extraction and high-fidelity PDF/HTML capture.
 - **CAPTCHA Management**: Automated detection and assisted resolution for reCAPTCHA, hCaptcha, and common challenge pages.
 
+## Demo
+
+See the General Browser Agent in action with Gemini CLI: [Watch on YouTube](https://youtu.be/O6nYKjmlaGk)
+
 ## Toolset
 
 ### Navigation & Tabs
