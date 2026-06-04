@@ -1,4 +1,4 @@
-const { getPage, closeBrowser, listPages, switchPage, newPage } = require('../core/browser');
+const { getPage, closeBrowser, listPages, switchPage, newPage, addRoute, clearRoutes, listRoutes } = require('../core/browser');
 const { captureState } = require('../core/state');
 const fs = require('fs');
 const path = require('path');
@@ -11,10 +11,14 @@ const TOOLS = [
     // ── Navigation & Tabs ─────────────────────────────────────────────────────
     {
         name: 'browser_navigate',
-        description: 'Navigate to a URL.',
+        description: 'Navigate to a URL. Retries automatically on network failure.',
         inputSchema: {
             type: 'object',
-            properties: { url: { type: 'string' } },
+            properties: {
+                url: { type: 'string' },
+                retries: { type: 'number', default: 2, description: 'Number of retry attempts on failure.' },
+                retryDelay: { type: 'number', default: 1000, description: 'Base delay in ms between retries (multiplied by attempt number).' },
+            },
             required: ['url'],
         },
     },
@@ -332,10 +336,11 @@ const TOOLS = [
     },
     {
         name: 'browser_print_to_pdf',
-        description: 'Print the current page to a PDF file.',
+        description: 'Print the current page to a PDF file. Returns the saved file path.',
         inputSchema: {
             type: 'object',
             properties: {
+                outputPath: { type: 'string', description: 'Absolute path to save the PDF. Defaults to a timestamped file in the pdfs/ directory.' },
                 landscape: { type: 'boolean', default: false },
                 printBackground: { type: 'boolean', default: true },
                 format: { type: 'string', default: 'A4' },
@@ -442,6 +447,38 @@ const TOOLS = [
         },
     },
 
+    // ── Request Interception ──────────────────────────────────────────────────
+    {
+        name: 'browser_intercept',
+        description: 'Intercept network requests matching a URL pattern. Use to block ads/trackers, mock API responses, or inject headers. Rules persist for the session until browser_clear_intercepts is called.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'URL glob pattern (e.g. "**/api/users*") or exact URL.' },
+                action: {
+                    type: 'string',
+                    enum: ['block', 'mock', 'modify'],
+                    description: '"block" aborts the request. "mock" returns a synthetic response. "modify" passes through with extra headers.',
+                },
+                status: { type: 'number', default: 200, description: 'HTTP status code for mock responses.' },
+                body: { description: 'Response body for mock (string or object — objects are JSON-serialized).' },
+                contentType: { type: 'string', default: 'application/json', description: 'Content-Type header for mock responses.' },
+                headers: { type: 'object', description: 'Headers to inject (mock: sets response headers; modify: merges into request headers).' },
+            },
+            required: ['pattern', 'action'],
+        },
+    },
+    {
+        name: 'browser_intercept_list',
+        description: 'List all active request intercept rules.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_clear_intercepts',
+        description: 'Remove all active request intercept rules.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     {
         name: 'browser_dismiss_popups',
@@ -455,9 +492,22 @@ async function handleToolCall(name, args) {
 
     switch (name) {
         // Navigation
-        case 'browser_navigate':
-            await page.goto(args.url, { waitUntil: 'load' });
-            return { content: [{ type: 'text', text: `Navigated to ${args.url}` }] };
+        case 'browser_navigate': {
+            const retries = args.retries ?? 2;
+            const retryDelay = args.retryDelay ?? 1000;
+            let lastError;
+            for (let attempt = 0; attempt <= retries; attempt++) {
+                try {
+                    await page.goto(args.url, { waitUntil: 'load', timeout: 30000 });
+                    const suffix = attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : '';
+                    return { content: [{ type: 'text', text: `Navigated to ${args.url}${suffix}` }] };
+                } catch (e) {
+                    lastError = e;
+                    if (attempt < retries) await page.waitForTimeout(retryDelay * (attempt + 1));
+                }
+            }
+            return { content: [{ type: 'text', text: `Failed to navigate to ${args.url} after ${retries + 1} attempt(s): ${lastError.message}` }], isError: true };
+        }
         case 'browser_new_tab': {
             const newPg = await newPage();
             if (args.url) await newPg.goto(args.url, { waitUntil: 'load' });
@@ -626,11 +676,15 @@ async function handleToolCall(name, args) {
         }
         case 'browser_print_to_pdf': {
             const pdf = await page.pdf({
-                landscape: args.landscape,
-                printBackground: args.printBackground,
-                format: args.format,
+                landscape: args.landscape ?? false,
+                printBackground: args.printBackground ?? true,
+                format: args.format ?? 'A4',
             });
-            return { content: [{ type: 'text', text: `PDF generated (${pdf.length} bytes). Use a resource tool if available to read binary data, or I can provide base64 if requested.` }, { type: 'text', text: `Base64: ${pdf.toString('base64').substring(0, 1000)}... (truncated)` }] };
+            const outputPath = args.outputPath || path.join(__dirname, '../../pdfs', `${Date.now()}.pdf`);
+            const dir = path.dirname(outputPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(outputPath, pdf);
+            return { content: [{ type: 'text', text: `PDF saved to ${outputPath} (${(pdf.length / 1024).toFixed(1)} KB)` }] };
         }
         case 'browser_get_cookies': {
             const cookies = await page.context().cookies();
@@ -768,6 +822,27 @@ async function handleToolCall(name, args) {
 
             return { content: [{ type: 'text', text: `Clicked indices ${results.join(', ')} and clicked "${action}".` }] };
         }
+        // Request Interception
+        case 'browser_intercept': {
+            await addRoute(args.pattern, args.action, {
+                status: args.status,
+                body: args.body,
+                contentType: args.contentType,
+                headers: args.headers,
+            });
+            return { content: [{ type: 'text', text: `Intercept rule added: ${args.action} "${args.pattern}"` }] };
+        }
+        case 'browser_intercept_list': {
+            const routes = listRoutes();
+            if (!routes.length) return { content: [{ type: 'text', text: 'No active intercept rules.' }] };
+            const text = routes.map(r => `[${r.action}] ${r.pattern}`).join('\n');
+            return { content: [{ type: 'text', text }] };
+        }
+        case 'browser_clear_intercepts': {
+            await clearRoutes();
+            return { content: [{ type: 'text', text: 'All intercept rules cleared.' }] };
+        }
+
         case 'browser_close': {
             await closeBrowser();
             return { content: [{ type: 'text', text: 'Browser session closed.' }] };

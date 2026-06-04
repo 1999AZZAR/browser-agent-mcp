@@ -5,13 +5,13 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 30 tools covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 33 tools covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
 | Task | Primary Call | Fallback |
 |------|-------------|---------|
-| Navigate to URL | `browser_navigate(url)` | — |
+| Navigate to URL | `browser_navigate(url)` | `browser_navigate(url, retries=2)` |
 | Sense page state | `browser_get_state()` | `browser_screenshot()` |
 | Semantic Click | `browser_click_text(text, type='button')` | `browser_click(selector)` |
 | Fill whole form | `browser_fill_form(data={...})` | `browser_type()` |
@@ -32,8 +32,13 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Scroll to element | `browser_scroll_to(selector)` | `browser_scroll(direction, amount)` |
 | Lazy-load content | `browser_smart_scroll(steps=5)` | — |
 | Extract text | `browser_get_text(selector)` | `browser_get_html(selector)` |
-| Save page as PDF | `browser_print_to_pdf()` | — |
+| Save page as PDF | `browser_print_to_pdf(outputPath)` | `browser_print_to_pdf()` (auto-named) |
 | Run JS in page | `browser_evaluate(script)` | `browser_evaluate(script, args={...})` |
+| Block requests | `browser_intercept(pattern, action='block')` | — |
+| Mock API response | `browser_intercept(pattern, action='mock', body={...})` | — |
+| Inject req headers | `browser_intercept(pattern, action='modify', headers={...})` | — |
+| List intercepts | `browser_intercept_list()` | — |
+| Clear intercepts | `browser_clear_intercepts()` | — |
 | Dismiss modal | `browser_dismiss_popups()` | `browser_evaluate("el.remove()")` |
 | Get cookies | `browser_get_cookies()` | — |
 | Press key | `browser_press(key)` | — |

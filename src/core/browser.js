@@ -9,6 +9,7 @@ const CONFIG = {
 
 let browserContext = null;
 let activePage = null;
+const activeRoutes = new Map(); // pattern → { action, options }
 
 async function getBrowserContext() {
     // If context exists, verify it's still connected
@@ -126,7 +127,45 @@ async function closeBrowser() {
         await browserContext.close();
         browserContext = null;
         activePage = null;
+        activeRoutes.clear();
     }
+}
+
+async function addRoute(pattern, action, options = {}) {
+    const ctx = await getBrowserContext();
+    if (activeRoutes.has(pattern)) {
+        await ctx.unroute(pattern).catch(() => {});
+    }
+    await ctx.route(pattern, (route) => {
+        if (action === 'block') {
+            return route.abort();
+        }
+        if (action === 'mock') {
+            return route.fulfill({
+                status: options.status ?? 200,
+                contentType: options.contentType ?? 'application/json',
+                body: typeof options.body === 'object' ? JSON.stringify(options.body) : (options.body ?? ''),
+                headers: options.headers ?? {},
+            });
+        }
+        // 'modify' — pass through with extra headers
+        return route.continue({
+            headers: { ...route.request().headers(), ...(options.headers ?? {}) },
+        });
+    });
+    activeRoutes.set(pattern, { action, options });
+}
+
+async function clearRoutes() {
+    const ctx = await getBrowserContext();
+    for (const pattern of activeRoutes.keys()) {
+        await ctx.unroute(pattern).catch(() => {});
+    }
+    activeRoutes.clear();
+}
+
+function listRoutes() {
+    return Array.from(activeRoutes.entries()).map(([pattern, config]) => ({ pattern, ...config }));
 }
 
 module.exports = {
@@ -135,5 +174,8 @@ module.exports = {
     closeBrowser,
     listPages,
     switchPage,
-    newPage
+    newPage,
+    addRoute,
+    clearRoutes,
+    listRoutes,
 };
