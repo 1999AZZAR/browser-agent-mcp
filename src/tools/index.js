@@ -4,8 +4,9 @@ const {
     createNamedPage, switchToNamedPage, removeNamedPage, listNamedPages,
     saveState,
     rotateSnapshot, saveSnapshot, getCurrSnapshot, getLastSnapshot,
+    getConsoleMessages, getNetworkRequests, clearConsoleMessages, clearNetworkRequests,
 } = require('../core/browser');
-const { captureState } = require('../core/state');
+const { captureState, observeInteractable, getElementByRef } = require('../core/state');
 const fs = require('fs');
 const path = require('path');
 
@@ -310,8 +311,17 @@ const TOOLS = [
     // ── Observation ───────────────────────────────────────────────────────────
     {
         name: 'browser_get_state',
-        description: 'Capture the current page state.',
-        inputSchema: { type: 'object', properties: {} },
+        description: 'Capture the current page state: URL, title, headings, text blocks, interactive elements (with ref numbers), AX tree, popups, and CAPTCHA status. Auto-saves snapshot for browser_state_diff. Pass screenshot=true to also include a visual screenshot — only do this when elements may be hidden from the AX tree (canvas, shadow DOM, iframes, visual-only widgets) or when layout context is needed.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                screenshot: {
+                    type: 'boolean',
+                    default: false,
+                    description: 'Include a screenshot. Default false — only pass true when visual context is needed (canvas, iframes, hidden-from-AX elements).',
+                },
+            },
+        },
     },
     {
         name: 'browser_get_text',
@@ -530,6 +540,54 @@ const TOOLS = [
         description: 'Try to dismiss common popups and banners.',
         inputSchema: { type: 'object', properties: {} },
     },
+
+    // ── Observe / Ref-click ───────────────────────────────────────────────────
+    {
+        name: 'browser_observe',
+        description: 'Return only interactable elements (buttons, inputs, links, selects) without a screenshot. Each element gets a stable `ref` number. Use before planning an action to enumerate available targets with minimal token cost — then act with browser_click_ref or browser_type.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'browser_click_ref',
+        description: 'Click an element by its `ref` number from the last browser_observe or browser_get_state call. More reliable than selectors for dynamic pages — no re-snapshotting needed.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                ref: { type: 'number', description: '1-based ref index from the last observe/state call.' },
+            },
+            required: ['ref'],
+        },
+    },
+
+    // ── CDP Diagnostics ───────────────────────────────────────────────────────
+    {
+        name: 'browser_console_messages',
+        description: 'Return captured browser console messages and page errors (last 100). Useful for debugging — check for JS errors after interactions. Read-only.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                type: {
+                    type: 'string',
+                    enum: ['all', 'error', 'warning', 'log'],
+                    default: 'all',
+                    description: 'Filter by message type.',
+                },
+                clear: { type: 'boolean', default: false, description: 'Clear the log after reading.' },
+            },
+        },
+    },
+    {
+        name: 'browser_network_requests',
+        description: 'Return captured network requests and their response status/timing (last 100). Useful for verifying API calls, detecting failed fetches, or inspecting what URLs are being hit. Read-only.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                filter: { type: 'string', description: 'Optional URL substring to filter results.' },
+                statusMin: { type: 'number', description: 'Only return requests with status >= this value (e.g. 400 for errors).' },
+                clear: { type: 'boolean', default: false, description: 'Clear the log after reading.' },
+            },
+        },
+    },
 ];
 
 async function handleToolCall(name, args) {
@@ -693,17 +751,15 @@ async function handleToolCall(name, args) {
 
         // Observation
         case 'browser_get_state': {
-            // Rotate and save AX snapshot before capture
             await rotateSnapshot();
             const state = await captureState(page);
             await saveSnapshot(state);
-            const ss = await page.screenshot({ type: 'png' });
-            return {
-                content: [
-                    { type: 'text', text: JSON.stringify(state, null, 2) },
-                    { type: 'image', data: ss.toString('base64'), mimeType: 'image/png' },
-                ],
-            };
+            const content = [{ type: 'text', text: JSON.stringify(state, null, 2) }];
+            if (args.screenshot) {
+                const ss = await page.screenshot({ type: 'png' });
+                content.push({ type: 'image', data: ss.toString('base64'), mimeType: 'image/png' });
+            }
+            return { content };
         }
         case 'browser_get_text': {
             if (args.all) {
@@ -1031,6 +1087,47 @@ async function handleToolCall(name, args) {
                 return actions;
             });
             return { content: [{ type: 'text', text: dismissed.length ? `Dismissed: ${dismissed.join(', ')}` : 'No popups found.' }] };
+        }
+
+        // Observe / Ref-click
+        case 'browser_observe': {
+            const observed = await observeInteractable(page);
+            return { content: [{ type: 'text', text: JSON.stringify(observed, null, 2) }] };
+        }
+        case 'browser_click_ref': {
+            const el = getElementByRef(args.ref);
+            if (!el) {
+                return { content: [{ type: 'text', text: `Ref ${args.ref} not found. Call browser_observe or browser_get_state first.` }], isError: true };
+            }
+            const cx = el.x + Math.floor(el.w / 2);
+            const cy = el.y + Math.floor(el.h / 2);
+            const label = el.text ? ` "${el.text.substring(0, 50)}"` : '';
+            if (AGENT_CONFIG.profile === 'stealth') {
+                await page.mouse.move(cx + (Math.random() - 0.5) * 4, cy + (Math.random() - 0.5) * 4, { steps: 5 });
+                await page.waitForTimeout(Math.random() * 150 + 80);
+            }
+            await page.mouse.click(cx, cy);
+            return { content: [{ type: 'text', text: `Clicked ref ${args.ref} (${el.tag}${label}) at (${cx}, ${cy}).` }] };
+        }
+
+        // CDP Diagnostics
+        case 'browser_console_messages': {
+            let messages = getConsoleMessages(page);
+            const filterType = args.type || 'all';
+            if (filterType !== 'all') messages = messages.filter(m => m.type === filterType);
+            if (args.clear) clearConsoleMessages(page);
+            if (!messages.length) return { content: [{ type: 'text', text: 'No console messages captured.' }] };
+            const lines = messages.map(m => `[${m.type}] ${m.text}${m.url ? ` (${m.url}:${m.line || 0})` : ''}`);
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        case 'browser_network_requests': {
+            let requests = getNetworkRequests(page);
+            if (args.filter) requests = requests.filter(r => r.url.includes(args.filter));
+            if (args.statusMin) requests = requests.filter(r => r.status >= args.statusMin);
+            if (args.clear) clearNetworkRequests(page);
+            if (!requests.length) return { content: [{ type: 'text', text: 'No network requests captured.' }] };
+            const lines = requests.map(r => `[${r.status}] ${r.method} ${r.url} — ${r.duration}ms ${r.contentType ? '(' + r.contentType + ')' : ''}`);
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
         default:

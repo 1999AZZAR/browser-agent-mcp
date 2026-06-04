@@ -84,6 +84,8 @@ Named agents are independent pages within the same browser. Use them to parallel
 | Tool | Description |
 |------|-------------|
 | `browser_get_state` | Unified page snapshot: URL, title, AX tree, interactive elements, screenshot — auto-saves AX tree for later diffing |
+| `browser_observe` | **Low-token alternative to `browser_get_state`** — returns only interactable elements with `ref` numbers, no screenshot. Use for pre-action planning. |
+| `browser_click_ref` | Click an element by its `ref` number from the last `browser_observe` or `browser_get_state` call |
 | `browser_state_diff` | Compare last two AX snapshots: URL/title changes, new/removed headings, element shifts, popups, captcha |
 | `browser_screenshot` | Take a screenshot |
 | `browser_get_text` | Read text from one or all matching elements |
@@ -92,6 +94,8 @@ Named agents are independent pages within the same browser. Use them to parallel
 | `browser_get_cookies` | Get all cookies for the active page |
 | `browser_evaluate` | Execute JavaScript in the page context (supports `return`, `await`, and `args` injection) |
 | `browser_print_to_pdf` | Save the page as a PDF file to a specified path |
+| `browser_console_messages` | Return captured browser console messages and JS errors (last 100). Filter by `type`. Pass `clear: true` to flush. |
+| `browser_network_requests` | Return captured network requests with status and timing (last 100). Filter by URL substring or `statusMin`. |
 
 **`browser_evaluate` usage:**
 ```js
@@ -185,11 +189,44 @@ Register in your MCP client config:
 }
 ```
 
+## Token-Efficient Interaction: Observe → Act
+
+For repetitive or well-understood pages, skip the heavy `browser_get_state` screenshot and use the observe→click loop:
+
+```
+1. browser_observe()           # Returns elements with ref numbers, no screenshot
+   → { elements: [{ ref: 1, tag: "BUTTON", text: "Sign In" }, ...] }
+
+2. browser_click_ref(ref=1)    # Click by ref — no re-snapshot needed
+   → "Clicked ref 1 (BUTTON "Sign In") at (320, 240)."
+```
+
+This matches the approach used by browser-use (93% context reduction) and Stagehand's `act` primitive.
+
+For debugging after an interaction:
+```
+browser_console_messages(type='error')   # Any JS errors?
+browser_network_requests(statusMin=400)  # Any failed API calls?
+```
+
 ## Architecture: Sense-Think-Act
 
-The agent is designed for closed-loop automation:
+The agent is designed for closed-loop automation with a **hybrid screenshot strategy** — screenshots are used only when the AX tree is insufficient.
 
-1. **Sense** — `browser_get_state` or `browser_screenshot` to read current page state
-2. **Think** — analyze state, determine next action
-3. **Act** — semantic tools (`browser_click_text`, `browser_fill_form`) or low-level interaction
-4. **Verify** — confirm outcome before proceeding
+```
+Unfamiliar page      → browser_get_state()               # AX tree + elements, no image
+Planning an action   → browser_observe()                  # interactable elements + refs only
+Visual verification  → browser_get_state(screenshot=true) # full state + screenshot
+Act by ref           → browser_click_ref(ref)             # stable, no re-snapshot needed
+After action         → browser_state_diff()               # diff only, no image
+Debug failures       → browser_console_messages()         # JS errors
+                       browser_network_requests()         # failed API calls
+```
+
+**When to request a screenshot:**
+- Canvas-rendered UIs, game elements, charts
+- `aria-hidden` elements that are visually significant
+- Cross-origin iframes
+- Visual layout verification (CAPTCHA, image-heavy pages)
+
+All other cases → AX tree is sufficient and far cheaper in tokens.

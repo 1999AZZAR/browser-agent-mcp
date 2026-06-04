@@ -5,14 +5,17 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **51 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **55 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
 | Task | Primary Call | Fallback |
 |------|-------------|---------|
 | Navigate to URL | `browser_navigate(url)` | `browser_navigate(url, retries=2)` |
-| Sense page state | `browser_get_state()` | `browser_screenshot()` |
+| Sense page state (structure only) | `browser_get_state()` | `browser_observe()` |
+| Sense page state (with visual) | `browser_get_state(screenshot=true)` | `browser_screenshot()` |
+| Enumerate interactable elements only | `browser_observe()` | `browser_get_state()` |
+| Click by element ref | `browser_click_ref(ref)` | `browser_click(selector)` |
 | Diff AX tree snapshots | `browser_state_diff()` | — |
 | Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
 | Semantic Click | `browser_click_text(text, type='button')` | `browser_click(selector)` |
@@ -46,6 +49,8 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | List intercepts | `browser_intercept_list()` | — |
 | Clear intercepts | `browser_clear_intercepts()` | — |
 | Dismiss modal | `browser_dismiss_popups()` | `browser_evaluate("el.remove()")` |
+| Console logs / JS errors | `browser_console_messages()` | — |
+| Network request log | `browser_network_requests(filter)` | — |
 | Get cookies | `browser_get_cookies()` | — |
 | Press key | `browser_press(key)` | — |
 | Drag element | `browser_drag(source, target)` | — |
@@ -117,14 +122,39 @@ Each `browser_get_state()` call automatically saves an AX tree snapshot. The pre
 
 Pure JSON comparison — zero image processing, minimal tokens.
 
+## Sense Strategy (Hybrid)
+
+Screenshots consume significant tokens. Use them only when the AX tree is not enough.
+
+| Situation | Tool | Screenshot? |
+|-----------|------|-------------|
+| Plan next action — what can I click? | `browser_observe()` | ❌ |
+| First look at unfamiliar page | `browser_get_state()` | ❌ |
+| Page has canvas, iframes, shadow DOM, or custom widgets | `browser_get_state(screenshot=true)` | ✔️ |
+| Explicit visual verification (layout, images, CAPTCHA) | `browser_screenshot()` or `browser_get_state(screenshot=true)` | ✔️ |
+| After action, check what changed | `browser_state_diff()` | ❌ |
+| Debug JS errors after interaction | `browser_console_messages(type='error')` | ❌ |
+| Verify API call was made | `browser_network_requests(filter='/api/')` | ❌ |
+
+**When AX tree is incomplete** (elements not appearing in `browser_observe` / `browser_get_state`):
+- Canvas-rendered UIs (charts, games, custom drawings)
+- `aria-hidden="true"` elements that are visually important
+- Cross-origin iframes
+- Web components with closed shadow DOM
+
+In those cases, call `browser_get_state(screenshot=true)` or `browser_screenshot()` to see what the page actually looks like.
+
+`browser_observe` returns only interactable elements with `ref` numbers. Use `browser_click_ref(ref)` to act on them — skips re-snapshotting and is stable on dynamic pages.
+
 ## Core Rules
 
-1. **Sense before act** — always call `browser_get_state()` or `browser_screenshot()` before interacting with an unfamiliar page.
-2. **Never zero-delay type** — minimum `delay=50`, target `delay=120` for public sites.
-3. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → `.class` → `x,y` coordinates.
-4. **After navigation** — call `browser_wait_for_selector` before next interaction.
-5. **On blocked elements** — call `browser_dismiss_popups()` first, then coordinate fallback, then `browser_evaluate`.
-6. **Sites with WebSocket/SSE** — use `browser_wait_for_load()` not `browser_wait_until_stable()` or you will hang.
+1. **Sense before act** — call `browser_get_state()` before an unfamiliar page. Add `screenshot=true` only when elements may be hidden from AX tree (canvas, iframes, shadow DOM).
+2. **Default no-screenshot** — `browser_observe()` and `browser_get_state()` (no arg) cost no image tokens. Reserve `screenshot=true` / `browser_screenshot()` for when visual context is genuinely needed.
+3. **Never zero-delay type** — minimum `delay=50`, target `delay=120` for public sites.
+4. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → ref number → `.class` → `x,y` coordinates.
+5. **After navigation** — call `browser_wait_for_selector` before next interaction.
+6. **On blocked elements** — call `browser_dismiss_popups()` first, then coordinate fallback, then `browser_evaluate`.
+7. **Sites with WebSocket/SSE** — use `browser_wait_for_load()` not `browser_wait_until_stable()` or you will hang.
 
 ## Deep References
 

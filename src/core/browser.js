@@ -14,6 +14,10 @@ let activePage = null;
 const activeRoutes = new Map(); // pattern → { action, options }
 const namedPages = new Map();   // name → Page
 
+const pageConsoleLog = new WeakMap(); // page → Message[]
+const pageNetworkLog = new WeakMap(); // page → Request[]
+const MAX_LOG_ENTRIES = 100;
+
 async function getBrowserContext() {
     if (browserContext) {
         try {
@@ -217,7 +221,48 @@ function setupPage(page) {
         console.error(`[Browser] Native dialog [${dialog.type()}]: "${dialog.message()}" — auto-accepting`);
         try { await dialog.accept(); } catch (_) {}
     });
+
+    // Console capture
+    const consoleLog = [];
+    pageConsoleLog.set(page, consoleLog);
+    page.on('console', msg => {
+        consoleLog.push({
+            type: msg.type(),
+            text: msg.text(),
+            url: msg.location()?.url || undefined,
+            line: msg.location()?.lineNumber || undefined,
+        });
+        if (consoleLog.length > MAX_LOG_ENTRIES) consoleLog.shift();
+    });
+    page.on('pageerror', err => {
+        consoleLog.push({ type: 'error', text: err.message });
+        if (consoleLog.length > MAX_LOG_ENTRIES) consoleLog.shift();
+    });
+
+    // Network capture
+    const netLog = [];
+    pageNetworkLog.set(page, netLog);
+    const reqStartTimes = new Map();
+    page.on('request', req => { reqStartTimes.set(req, Date.now()); });
+    page.on('response', resp => {
+        const req = resp.request();
+        const start = reqStartTimes.get(req) || Date.now();
+        reqStartTimes.delete(req);
+        netLog.push({
+            method: req.method(),
+            url: req.url(),
+            status: resp.status(),
+            contentType: (resp.headers()['content-type'] || '').split(';')[0].trim(),
+            duration: Date.now() - start,
+        });
+        if (netLog.length > MAX_LOG_ENTRIES) netLog.shift();
+    });
 }
+
+function getConsoleMessages(page) { return pageConsoleLog.get(page) || []; }
+function getNetworkRequests(page) { return pageNetworkLog.get(page) || []; }
+function clearConsoleMessages(page) { const log = pageConsoleLog.get(page); if (log) log.length = 0; }
+function clearNetworkRequests(page) { const log = pageNetworkLog.get(page); if (log) log.length = 0; }
 
 async function listPages() {
     const ctx = await getBrowserContext();
@@ -379,4 +424,8 @@ module.exports = {
     saveSnapshot,
     getCurrSnapshot,
     getLastSnapshot,
+    getConsoleMessages,
+    getNetworkRequests,
+    clearConsoleMessages,
+    clearNetworkRequests,
 };
