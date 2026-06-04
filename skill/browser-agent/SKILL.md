@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 37 tools covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **51 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
@@ -13,6 +13,8 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 |------|-------------|---------|
 | Navigate to URL | `browser_navigate(url)` | `browser_navigate(url, retries=2)` |
 | Sense page state | `browser_get_state()` | `browser_screenshot()` |
+| Diff AX tree snapshots | `browser_state_diff()` | — |
+| Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
 | Semantic Click | `browser_click_text(text, type='button')` | `browser_click(selector)` |
 | Fill whole form | `browser_fill_form(data={...})` | `browser_type()` |
 | Manage Tabs | `browser_new_tab()`, `browser_list_tabs()`, `browser_switch_tab(index)` | — |
@@ -99,6 +101,21 @@ sequenceDiagram
     Main->>AgentB: browser_navigate(target)
     Main->>AgentB: browser_extract_table(...)
 ```
+
+## Page State Diffing
+
+Each `browser_get_state()` call automatically saves an AX tree snapshot. The previous snapshot is preserved as `laststate.json`:
+
+1. **Call 1** → `currentstate.json` saved
+2. **Call 2** → `currentstate.json` → `laststate.json`, new `currentstate.json` saved
+3. **`browser_state_diff()`** → compares both, returns:
+   - URL/title changes
+   - New/removed headings
+   - Interactive element count changes (by tag type)
+   - Popup appeared/dismissed
+   - CAPTCHA status transitions
+
+Pure JSON comparison — zero image processing, minimal tokens.
 
 ## Core Rules
 

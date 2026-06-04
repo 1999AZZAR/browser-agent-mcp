@@ -3,6 +3,7 @@ const {
     addRoute, clearRoutes, listRoutes,
     createNamedPage, switchToNamedPage, removeNamedPage, listNamedPages,
     saveState,
+    rotateSnapshot, saveSnapshot, getCurrSnapshot, getLastSnapshot,
 } = require('../core/browser');
 const { captureState } = require('../core/state');
 const fs = require('fs');
@@ -375,6 +376,11 @@ const TOOLS = [
         },
     },
     {
+        name: 'browser_state_diff',
+        description: 'Compare the last two AX tree snapshots (saved automatically by browser_get_state). Returns structured diff: URL/title changes, new/removed headings, element changes, popup and captcha status transitions.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
         name: 'browser_extract_table',
         description: 'Extract data from an HTML table into JSON.',
         inputSchema: {
@@ -687,7 +693,10 @@ async function handleToolCall(name, args) {
 
         // Observation
         case 'browser_get_state': {
+            // Rotate and save AX snapshot before capture
+            await rotateSnapshot();
             const state = await captureState(page);
+            await saveSnapshot(state);
             const ss = await page.screenshot({ type: 'png' });
             return {
                 content: [
@@ -775,6 +784,61 @@ async function handleToolCall(name, args) {
                 return { content: [{ type: 'text', text: JSON.stringify({ table: structured }, null, 2) }] };
             }
             return { content: [{ type: 'text', text: JSON.stringify({ table: data }, null, 2) }] };
+        }
+        case 'browser_state_diff': {
+            const last = getLastSnapshot();
+            const curr = getCurrSnapshot();
+            if (!curr) return { content: [{ type: 'text', text: 'No current snapshot. Call browser_get_state first.' }] };
+            if (!last) return { content: [{ type: 'text', text: 'Only one snapshot exists. Call browser_get_state again to create a baseline for comparison.' }] };
+
+            const changes = {};
+
+            // URL / title
+            if (last.url !== curr.url) changes.url = { from: last.url, to: curr.url };
+            if (last.title !== curr.title) changes.title = { from: last.title, to: curr.title };
+
+            // Headings
+            const lastH = new Set((last.headings || []).map(h => `${h.level}:${h.text}`));
+            const currH = new Set((curr.headings || []).map(h => `${h.level}:${h.text}`));
+            const newH = (curr.headings || []).filter(h => !lastH.has(`${h.level}:${h.text}`));
+            const goneH = (last.headings || []).filter(h => !currH.has(`${h.level}:${h.text}`));
+            if (newH.length) changes.newHeadings = newH;
+            if (goneH.length) changes.removedHeadings = goneH;
+
+            // Interactive elements — summary by tag
+            const lastTags = {};
+            for (const el of last.elements || []) {
+                const t = el.tag || '?';
+                lastTags[t] = (lastTags[t] || 0) + 1;
+            }
+            const currTags = {};
+            for (const el of curr.elements || []) {
+                const t = el.tag || '?';
+                currTags[t] = (currTags[t] || 0) + 1;
+            }
+            const tagDiffs = [];
+            for (const tag of new Set([...Object.keys(lastTags), ...Object.keys(currTags)]).values()) {
+                const before = lastTags[tag] || 0;
+                const after = currTags[tag] || 0;
+                if (before !== after) tagDiffs.push({ tag, before, after });
+            }
+            if (tagDiffs.length) changes.elements = tagDiffs;
+
+            // Popups
+            const hadPopups = (last.popups || []).length > 0;
+            const hasPopups = (curr.popups || []).length > 0;
+            if (!hadPopups && hasPopups) changes.popup = { status: 'appeared', text: curr.popups[0]?.text?.substring(0, 200) };
+            if (hadPopups && !hasPopups) changes.popup = { status: 'dismissed' };
+
+            // CAPTCHA
+            if (!last.captchaDetected && curr.captchaDetected) changes.captcha = 'appeared';
+            if (last.captchaDetected && !curr.captchaDetected) changes.captcha = 'resolved';
+
+            const summary = Object.keys(changes).length
+                ? JSON.stringify({ changes }, null, 2)
+                : 'No meaningful changes detected between last two snapshots.';
+
+            return { content: [{ type: 'text', text: summary }] };
         }
         case 'browser_save_session': {
             const sessionDir = path.join(__dirname, '../../sessions');

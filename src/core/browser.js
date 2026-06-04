@@ -84,6 +84,10 @@ function injectCookiesIfExist() {
 
 // ── Session State Persistence ──────────────────────────────────────────────────
 
+const SNAP_DIR = path.join(CONFIG.userDataDir, 'snapshots');
+const CURR_SNAP = path.join(SNAP_DIR, 'currentstate.json');
+const LAST_SNAP = path.join(SNAP_DIR, 'laststate.json');
+
 async function saveState() {
     if (!browserContext) return;
     const pages = [];
@@ -157,6 +161,34 @@ async function restoreState() {
 
     console.error(`[Browser] Restored ${state.pages.length} tab(s) and ${(state.routes || []).length} intercept rule(s) from session state`);
 }
+
+// ── AX Tree Snapshot Management ────────────────────────────────────────────────
+
+async function rotateSnapshot() {
+    try {
+        if (fs.existsSync(CURR_SNAP)) {
+            fs.mkdirSync(SNAP_DIR, { recursive: true });
+            fs.copyFileSync(CURR_SNAP, LAST_SNAP);
+        }
+    } catch (_) {}
+}
+
+async function saveSnapshot(data) {
+    try {
+        fs.mkdirSync(SNAP_DIR, { recursive: true });
+        fs.writeFileSync(CURR_SNAP, JSON.stringify(data, null, 2));
+    } catch (_) {}
+}
+
+function loadSnapshot(snapPath) {
+    try {
+        if (!fs.existsSync(snapPath)) return null;
+        return JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+    } catch (_) { return null; }
+}
+
+function getCurrSnapshot() { return loadSnapshot(CURR_SNAP); }
+function getLastSnapshot() { return loadSnapshot(LAST_SNAP); }
 
 // ── Page Management ────────────────────────────────────────────────────────────
 
@@ -343,4 +375,8 @@ module.exports = {
     clearRoutes,
     listRoutes,
     saveState,
+    rotateSnapshot,
+    saveSnapshot,
+    getCurrSnapshot,
+    getLastSnapshot,
 };

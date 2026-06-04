@@ -83,7 +83,8 @@ Named agents are independent pages within the same browser. Use them to parallel
 
 | Tool | Description |
 |------|-------------|
-| `browser_get_state` | Unified page snapshot: URL, title, AX tree, interactive elements, screenshot |
+| `browser_get_state` | Unified page snapshot: URL, title, AX tree, interactive elements, screenshot — auto-saves AX tree for later diffing |
+| `browser_state_diff` | Compare last two AX snapshots: URL/title changes, new/removed headings, element shifts, popups, captcha |
 | `browser_screenshot` | Take a screenshot |
 | `browser_get_text` | Read text from one or all matching elements |
 | `browser_get_html` | Get full page or element HTML |
