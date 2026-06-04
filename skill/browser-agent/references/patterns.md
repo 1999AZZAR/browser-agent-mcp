@@ -14,7 +14,11 @@ browser_get_state()                          // verify result relevance
 ## Form Fill Flow
 ```
 browser_get_state()                          // map all fields: name, id, placeholder
-// For each field:
+// Simple form (one type):
+browser_fill_form(data={"#email": "me@example.com", "#password": "secret"})
+// OR structured form (mixed input types) — auto-detects date/number/email/tel/url/select/checkbox/radio/file/contenteditable:
+browser_fill_form(data={"#dob": "1990-01-15", "#qty": "3", "#email": "me@x.com"}, typeAware=true)
+// For per-field control with stealth timing:
 browser_scroll_to(field_selector)
 browser_type(field_selector, value, delay=120)
 // For dropdowns:
@@ -24,6 +28,26 @@ browser_check(selector) / browser_uncheck(selector)
 // Submit:
 browser_click(submit_selector)              // role="button" or text match
 browser_dismiss_popups()                    // catch error/success toasts
+```
+
+## Session Export & Replay
+```
+// Snapshot current state (URL, AX, elements, cookies, storage) → exports/state-<ts>.json
+browser_export_state()
+// With full AX tree (larger):
+browser_export_state(includeAxTree=true)
+// To a specific path:
+browser_export_state(outputPath="/tmp/run-42.json")
+// List saved sessions:
+browser_list_sessions()
+```
+
+## Diagnose Browser Issues
+```
+// If the page stops responding or you see repeated Target.createTarget errors:
+browser_health()
+// → { contextAlive, pageResponsive, pageCount, pageLatencyMs, activePageUrl, ... }
+// If pageResponsive=false, the next tool call will reset the context automatically.
 ```
 
 ## Deep Content Extraction

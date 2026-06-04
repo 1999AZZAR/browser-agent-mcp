@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **61 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **64 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
@@ -19,14 +19,16 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Diff AX tree snapshots | `browser_state_diff()` | — |
 | Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
 | Semantic Click | `browser_click_text(text, type='button')` | `browser_click(selector)` |
-| Fill whole form | `browser_fill_form(data={...})` | `browser_type()` |
+| Fill whole form (simple) | `browser_fill_form(data={...})` | `browser_type()` |
+| Fill whole form (type-aware) | `browser_fill_form(data={...}, typeAware=true)` | per-field `browser_type` |
 | Manage Tabs | `browser_new_tab()`, `browser_list_tabs()`, `browser_switch_tab(index)` | — |
 | Wait (networkidle) | `browser_wait_until_stable()` | `browser_wait(3000)` |
 | Wait (load event) | `browser_wait_for_load(state='load')` | `browser_wait_for_load(state='domcontentloaded')` |
-| Extract Tables | `browser_extract_table(selector)` | `browser_get_text()` |
 | Save session (cookies only) | `browser_save_session(name)` | — |
 | Save session (full auth state) | `browser_save_session(name, includeStorage=true)` | — |
 | Load session | `browser_load_session(name)` | — |
+| List saved sessions | `browser_list_sessions()` | — |
+| Export current state (JSON) | `browser_export_state()` | `browser_export_state(outputPath, includeAxTree=true)` |
 | Create named agent/page | `browser_agent_create(name)` | — |
 | Switch to named agent | `browser_agent_switch(name)` | — |
 | Remove named agent | `browser_agent_remove(name)` | — |
@@ -40,7 +42,7 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Hover then click | `browser_hover(selector)` → wait → `browser_click(selector)` | — |
 | Scroll to element | `browser_scroll_to(selector)` | `browser_scroll(direction, amount)` |
 | Lazy-load content | `browser_smart_scroll(steps=5)` | — |
-| Extract text | `browser_get_text(selector)` | `browser_get_html(selector)` |
+| Extract text | `browser_get_text(selector, all=true, maxLines=200)` | `browser_get_html(selector)` |
 | Save page as PDF | `browser_print_to_pdf(outputPath)` | `browser_print_to_pdf()` (auto-named) |
 | Run JS in page | `browser_evaluate(script)` | `browser_evaluate(script, args={...})` |
 | Block requests | `browser_intercept(pattern, action='block')` | — |
@@ -49,8 +51,9 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | List intercepts | `browser_intercept_list()` | — |
 | Clear intercepts | `browser_clear_intercepts()` | — |
 | Dismiss modal | `browser_dismiss_popups()` | `browser_evaluate("el.remove()")` |
-| Console logs / JS errors (source-mapped) | `browser_console_messages()` | — |
-| Network request log | `browser_network_requests(filter)` | — |
+| Console logs / JS errors (source-mapped) | `browser_console_messages(type='error', maxLines=200)` | — |
+| Network request log | `browser_network_requests(filter, statusMin=400, maxLines=200)` | — |
+| Browser health check | `browser_health()` | — |
 | Structured data extraction | `browser_extract_schema(schema)` | `browser_extract_table(selector)` |
 | Core Web Vitals + timing | `browser_performance()` | — |
 | Validate outcome (planner-validator) | `browser_assert(condition)` | — |
@@ -90,6 +93,44 @@ The browser-agent persists its state (open pages, URLs, intercept rules) to `use
 5. The active page is restored
 
 State is cleared on explicit `browser_close()`.
+
+## Browser Stability
+
+The browser layer is hardened for long-running, fault-tolerant operation. No action is required from the agent — these are automatic.
+
+- **Launch retry with backoff** — `chromium.launchPersistentContext` is wrapped in exponential backoff (env: `BROWSER_LAUNCH_RETRIES`, `BROWSER_LAUNCH_BACKOFF`). Cold starts recover from transient failures.
+- **Tab creation retry** — if a `Target.createTarget` or protocol error occurs when opening a new tab, the context is reset and the call is retried up to 3 times.
+- **Context health probe** — the cached context is checked for liveness (5s timeout) before reuse. Dead contexts are torn down and relaunched transparently.
+- **Dedicated Chromium** — set `CHROMIUM_EXECUTABLE_PATH=/path/to/chromium` (or `CHROMIUM_CHANNEL=chrome`) to use a specific binary instead of Playwright's bundled one.
+- **Headless toggle** — set `BROWSER_HEADLESS=true` for CI / production.
+- **`browser_health` tool** — returns `contextAlive`, `pageResponsive`, `pageCount`, `pageLatencyMs`, `activePageUrl`, `headless`, `executablePath`, `launchRetries`. Call this when something feels off (zombie context, unresponsive page, repeated failures).
+
+## Form Fill Strategy
+
+For most forms, the simple call works:
+```
+browser_fill_form(data={"#email": "me@example.com", "#password": "secret"})
+```
+
+For structured forms with mixed input types (date pickers, numbers, emails, tel, urls, selects, checkboxes, radios, file inputs, contenteditable), enable type-aware mode — it auto-detects each input's type and uses the right Playwright method with value coercion:
+```
+browser_fill_form(
+  data={
+    "#email":   "me@example.com",
+    "#dob":     "1990-01-15",
+    "#qty":     "3",
+    "#phone":   "+1 555 123 4567",
+    "#site":    "example.com",        // auto-prefixed with https://
+    "#agree":   "yes",                // truthy → checked
+    "#avatar":  "/path/to/img.png",   // single file
+    "#docs":    "/a.pdf, /b.pdf",     // comma-separated → multiple files
+    "#bio":     "Long markdown..."    // contenteditable → keyboard.type
+  },
+  typeAware=true
+)
+```
+
+Type-aware is more reliable for real-world forms and validates emails before filling.
 
 ## Named Agents (Parallelism)
 
@@ -195,11 +236,14 @@ browser_generate_playwright_test(testName="checkout_flow", outputPath="/tmp/test
 
 1. **Sense before act** — call `browser_get_state()` before an unfamiliar page. Add `screenshot=true` only when elements may be hidden from AX tree (canvas, iframes, shadow DOM).
 2. **Default no-screenshot** — `browser_observe()` and `browser_get_state()` (no arg) cost no image tokens. Reserve `screenshot=true` / `browser_screenshot()` for when visual context is genuinely needed.
-3. **Never zero-delay type** — minimum `delay=50`, target `delay=120` for public sites.
-4. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → ref number → `.class` → `x,y` coordinates.
-5. **After navigation** — call `browser_wait_for_selector` before next interaction.
-6. **On blocked elements** — call `browser_dismiss_popups()` first, then coordinate fallback, then `browser_evaluate`.
-7. **Sites with WebSocket/SSE** — use `browser_wait_for_load()` not `browser_wait_until_stable()` or you will hang.
+3. **Cap diagnostics output** — when calling `browser_console_messages`, `browser_network_requests`, or `browser_get_text(all=true)` on busy pages, pass `maxLines` (e.g. 200) to control token cost.
+4. **Never zero-delay type** — minimum `delay=50`, target `delay=120` for public sites.
+5. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → ref number → `.class` → `x,y` coordinates.
+6. **After navigation** — call `browser_wait_for_selector` before next interaction.
+7. **On blocked elements** — call `browser_dismiss_popups()` first, then coordinate fallback, then `browser_evaluate`.
+8. **Sites with WebSocket/SSE** — use `browser_wait_for_load()` not `browser_wait_until_stable()` or you will hang.
+9. **On persistent failures** — call `browser_health()`. If `contextAlive=false` or `pageResponsive=false`, the next tool call will auto-recover; otherwise investigate the active URL and recent `browser_console_messages(type='error')`.
+10. **Structured forms** — prefer `browser_fill_form(..., typeAware=true)` over per-field `browser_type` when the form has mixed input types (date/number/email/tel/url/select/checkbox/radio/file/contenteditable).
 
 ## Deep References
 
