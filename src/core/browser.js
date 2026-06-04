@@ -7,12 +7,14 @@ const CONFIG = {
     viewport: { width: 1280, height: 720 },
 };
 
+const STATE_FILE = path.join(CONFIG.userDataDir, 'session_state.json');
+
 let browserContext = null;
 let activePage = null;
 const activeRoutes = new Map(); // pattern → { action, options }
+const namedPages = new Map();   // name → Page
 
 async function getBrowserContext() {
-    // If context exists, verify it's still connected
     if (browserContext) {
         try {
             await browserContext.pages();
@@ -20,16 +22,12 @@ async function getBrowserContext() {
             console.error('[Browser] Existing context is closed. Relaunching...');
             browserContext = null;
             activePage = null;
+            namedPages.clear();
         }
     }
 
     if (!browserContext) {
-        if (!fs.existsSync(CONFIG.userDataDir)) fs.mkdirSync(CONFIG.userDataDir, { recursive: true });
-        
-        // Clean stale lockfiles
-        ['SingletonLock', 'SingletonSocket', 'SingletonCookie'].forEach(f => {
-            try { fs.unlinkSync(path.join(CONFIG.userDataDir, f)); } catch (_) {}
-        });
+        await ensureUserDataDir();
 
         browserContext = await chromium.launchPersistentContext(CONFIG.userDataDir, {
             headless: false,
@@ -49,30 +47,132 @@ async function getBrowserContext() {
             ignoreDefaultArgs: ['--enable-automation'],
         });
 
-        // Inject cookies if they exist
-        const cookiesPath = path.join(__dirname, '../../cookies.json');
-        if (fs.existsSync(cookiesPath)) {
-            try {
-                const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
-                await browserContext.addCookies(cookies);
-                console.error(`[Browser] Injected ${cookies.length} cookies from cookies.json`);
-            } catch (e) {
-                console.error(`[Browser] Failed to inject cookies: ${e.message}`);
-            }
-        }
+        injectCookiesIfExist();
 
-        // Handle context close
         browserContext.on('close', () => {
             browserContext = null;
             activePage = null;
+            namedPages.clear();
         });
+
+        // Attempt to restore previous session state (tabs + routes)
+        await restoreState().catch(e => console.error('[Browser] State restore failed:', e.message));
     }
     return browserContext;
 }
 
+async function ensureUserDataDir() {
+    if (!fs.existsSync(CONFIG.userDataDir)) fs.mkdirSync(CONFIG.userDataDir, { recursive: true });
+    // Clean stale lockfiles
+    ['SingletonLock', 'SingletonSocket', 'SingletonCookie'].forEach(f => {
+        try { fs.unlinkSync(path.join(CONFIG.userDataDir, f)); } catch (_) {}
+    });
+}
+
+function injectCookiesIfExist() {
+    const cookiesPath = path.join(__dirname, '../../cookies.json');
+    if (fs.existsSync(cookiesPath)) {
+        try {
+            const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
+            browserContext.addCookies(cookies).catch(() => {});
+            console.error(`[Browser] Injected ${cookies.length} cookies from cookies.json`);
+        } catch (e) {
+            console.error(`[Browser] Failed to inject cookies: ${e.message}`);
+        }
+    }
+}
+
+// ── Session State Persistence ──────────────────────────────────────────────────
+
+async function saveState() {
+    if (!browserContext) return;
+    const pages = [];
+    const seen = new Set();
+    for (const [name, pg] of namedPages) {
+        try {
+            if (pg.isClosed()) continue;
+            const url = pg.url();
+            if (url && url !== 'about:blank') {
+                pages.push({ name, url });
+                seen.add(pg);
+            }
+        } catch (_) {}
+    }
+    // Include unnamed context pages
+    try {
+        const ctxPages = browserContext.pages();
+        for (const pg of ctxPages) {
+            if (seen.has(pg) || pg.isClosed()) continue;
+            const url = pg.url();
+            if (url && url !== 'about:blank') {
+                pages.push({ name: `_tab${pg.index || pages.length}`, url });
+            }
+        }
+    } catch (_) {}
+
+    const routes = listRoutes();
+    const activeName = getActiveName();
+    const state = { pages, routes, activeName, timestamp: Date.now() };
+    try {
+        fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    } catch (_) {}
+}
+
+async function restoreState() {
+    if (!fs.existsSync(STATE_FILE)) return;
+    const raw = fs.readFileSync(STATE_FILE, 'utf8').trim();
+    if (!raw) return;
+    const state = JSON.parse(raw);
+    if (!state.pages || !state.pages.length) return;
+
+    const ctx = browserContext;
+    if (!ctx) return;
+
+    // Close the blank auto-created page
+    for (const p of ctx.pages()) {
+        try { if (p.url() === 'about:blank' || !p.url()) await p.close(); } catch (_) {}
+    }
+
+    // Reopen saved pages
+    for (const { name, url } of state.pages) {
+        const pg = await ctx.newPage();
+        setupPage(pg);
+        namedPages.set(name, pg);
+        pg.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    }
+
+    // Set active page
+    if (state.activeName && namedPages.has(state.activeName)) {
+        activePage = namedPages.get(state.activeName);
+    } else {
+        activePage = namedPages.values().next().value;
+    }
+    if (activePage) activePage.bringToFront().catch(() => {});
+
+    // Reapply intercept routes
+    for (const entry of state.routes || []) {
+        const { pattern, action, options } = entry;
+        await addRoute(pattern, action, (options && typeof options === 'object') ? options : {}).catch(() => {});
+    }
+
+    console.error(`[Browser] Restored ${state.pages.length} tab(s) and ${(state.routes || []).length} intercept rule(s) from session state`);
+}
+
+// ── Page Management ────────────────────────────────────────────────────────────
+
 async function getPage() {
     const ctx = await getBrowserContext();
     if (!activePage || activePage.isClosed()) {
+        // Recover from named pages first
+        if (namedPages.size > 0) {
+            for (const [, pg] of namedPages) {
+                if (!pg.isClosed()) {
+                    activePage = pg;
+                    return activePage;
+                }
+            }
+            namedPages.clear();
+        }
         const pages = ctx.pages();
         activePage = pages.length > 0 ? pages[0] : await ctx.newPage();
         setupPage(activePage);
@@ -81,7 +181,6 @@ async function getPage() {
 }
 
 function setupPage(page) {
-    // Auto-accept native browser dialogs
     page.on('dialog', async (dialog) => {
         console.error(`[Browser] Native dialog [${dialog.type()}]: "${dialog.message()}" — auto-accepting`);
         try { await dialog.accept(); } catch (_) {}
@@ -91,17 +190,12 @@ function setupPage(page) {
 async function listPages() {
     const ctx = await getBrowserContext();
     const pages = ctx.pages();
-    const result = [];
-    for (let i = 0; i < pages.length; i++) {
-        const p = pages[i];
-        result.push({
-            index: i,
-            title: await p.title().catch(() => 'Error'),
-            url: p.url(),
-            active: p === activePage
-        });
-    }
-    return result;
+    return pages.map((p, i) => ({
+        index: i,
+        title: p.title().catch(() => 'Error'),
+        url: p.url(),
+        active: p === activePage,
+    }));
 }
 
 async function switchPage(index) {
@@ -122,14 +216,81 @@ async function newPage() {
     return activePage;
 }
 
+// ── Named Pages (Agent Parallelism) ────────────────────────────────────────────
+
+async function createNamedPage(name) {
+    const ctx = await getBrowserContext();
+    // If name already exists, just switch to it
+    if (namedPages.has(name)) {
+        activePage = namedPages.get(name);
+        await activePage.bringToFront();
+        return false;
+    }
+    const pg = await ctx.newPage();
+    setupPage(pg);
+    namedPages.set(name, pg);
+    activePage = pg;
+    return true;
+}
+
+async function switchToNamedPage(name) {
+    if (!namedPages.has(name)) return false;
+    activePage = namedPages.get(name);
+    await activePage.bringToFront();
+    return true;
+}
+
+async function removeNamedPage(name) {
+    if (!namedPages.has(name)) return false;
+    const pg = namedPages.get(name);
+    namedPages.delete(name);
+    try { await pg.close(); } catch (_) {}
+
+    // Recover to another page
+    if (activePage === pg || activePage?.isClosed()) {
+        const remaining = Array.from(namedPages.values());
+        const ctx = browserContext;
+        if (remaining.length > 0) {
+            activePage = remaining[0];
+        } else if (ctx) {
+            const ctxPages = ctx.pages().filter(p => !p.isClosed());
+            activePage = ctxPages.length > 0 ? ctxPages[0] : await ctx.newPage();
+            setupPage(activePage);
+        }
+    }
+    return true;
+}
+
+function listNamedPages() {
+    return Array.from(namedPages.entries()).map(([name, pg]) => ({
+        name,
+        url: pg.url(),
+        hasActivePage: pg === activePage,
+    }));
+}
+
+function getActiveName() {
+    for (const [name, pg] of namedPages) {
+        if (pg === activePage) return name;
+    }
+    return 'default';
+}
+
+// ── Lifecycle ──────────────────────────────────────────────────────────────────
+
 async function closeBrowser() {
     if (browserContext) {
         await browserContext.close();
         browserContext = null;
         activePage = null;
         activeRoutes.clear();
+        namedPages.clear();
     }
+    // Clear saved state so we start fresh next time
+    try { fs.unlinkSync(STATE_FILE); } catch (_) {}
 }
+
+// ── Request Interception ───────────────────────────────────────────────────────
 
 async function addRoute(pattern, action, options = {}) {
     const ctx = await getBrowserContext();
@@ -137,9 +298,7 @@ async function addRoute(pattern, action, options = {}) {
         await ctx.unroute(pattern).catch(() => {});
     }
     await ctx.route(pattern, (route) => {
-        if (action === 'block') {
-            return route.abort();
-        }
+        if (action === 'block') return route.abort();
         if (action === 'mock') {
             return route.fulfill({
                 status: options.status ?? 200,
@@ -148,12 +307,12 @@ async function addRoute(pattern, action, options = {}) {
                 headers: options.headers ?? {},
             });
         }
-        // 'modify' — pass through with extra headers
         return route.continue({
             headers: { ...route.request().headers(), ...(options.headers ?? {}) },
         });
     });
     activeRoutes.set(pattern, { action, options });
+    await saveState();
 }
 
 async function clearRoutes() {
@@ -162,6 +321,7 @@ async function clearRoutes() {
         await ctx.unroute(pattern).catch(() => {});
     }
     activeRoutes.clear();
+    await saveState();
 }
 
 function listRoutes() {
@@ -175,7 +335,12 @@ module.exports = {
     listPages,
     switchPage,
     newPage,
+    createNamedPage,
+    switchToNamedPage,
+    removeNamedPage,
+    listNamedPages,
     addRoute,
     clearRoutes,
     listRoutes,
+    saveState,
 };

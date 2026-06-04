@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 33 tools covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 37 tools covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Dispatch Table
 
@@ -22,6 +22,10 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Save session (cookies only) | `browser_save_session(name)` | — |
 | Save session (full auth state) | `browser_save_session(name, includeStorage=true)` | — |
 | Load session | `browser_load_session(name)` | — |
+| Create named agent/page | `browser_agent_create(name)` | — |
+| Switch to named agent | `browser_agent_switch(name)` | — |
+| Remove named agent | `browser_agent_remove(name)` | — |
+| List all agents | `browser_agent_list()` | — |
 | Agent Profile | `browser_set_agent_profile(profile='stealth')` | — |
 | Handle CAPTCHA | `browser_handle_captcha(wait=true)` | — |
 | Click element | `browser_click(selector)` | `browser_click(x, y)` |
@@ -61,6 +65,40 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 - Supports `await`: `const r = await fetch('/api'); return r.status`
 - Pass data via `args`: `return args.multiplier * 2` with `args={"multiplier": 5}`
 - Errors are surfaced as `isError: true` with the JS exception message
+
+## Session Recovery
+
+The browser-agent persists its state (open pages, URLs, intercept rules) to `user_data/session_state.json` on every navigation and intercept change. If the browser process crashes or is killed:
+
+1. The next tool call triggers `getBrowserContext()`, which detects the dead context
+2. A new browser instance is launched automatically
+3. Previous tabs are reopened at their last URLs
+4. All intercept rules are re-applied
+5. The active page is restored
+
+State is cleared on explicit `browser_close()`.
+
+## Named Agents (Parallelism)
+
+Each `browser_agent_create(name)` gives you an independent page within the same browser context. Use this when:
+
+- Sub-agents or parallel tasks need their own page without stepping on each other
+- You want to keep a page on hold while working with another
+- Multi-account or multi-page workflows
+
+```mermaid
+sequenceDiagram
+    participant Main
+    participant AgentA as agent "auth"
+    participant AgentB as agent "scraper"
+    Main->>AgentA: browser_agent_create("auth")
+    Main->>AgentA: browser_navigate(login)
+    Main->>AgentA: browser_fill_form(credentials)
+    Main->>AgentB: browser_agent_create("scraper")
+    Note over AgentB: auth carries on independently
+    Main->>AgentB: browser_navigate(target)
+    Main->>AgentB: browser_extract_table(...)
+```
 
 ## Core Rules
 

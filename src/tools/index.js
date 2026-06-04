@@ -1,4 +1,9 @@
-const { getPage, closeBrowser, listPages, switchPage, newPage, addRoute, clearRoutes, listRoutes } = require('../core/browser');
+const {
+    getPage, closeBrowser, listPages, switchPage, newPage,
+    addRoute, clearRoutes, listRoutes,
+    createNamedPage, switchToNamedPage, removeNamedPage, listNamedPages,
+    saveState,
+} = require('../core/browser');
 const { captureState } = require('../core/state');
 const fs = require('fs');
 const path = require('path');
@@ -447,6 +452,40 @@ const TOOLS = [
         },
     },
 
+    // ── Named Pages / Agent Parallelism ──────────────────────────────────────
+    {
+        name: 'browser_agent_create',
+        description: 'Create or switch to a named page/agent. Each named page is independent — use this to run parallel automation flows.',
+        inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string', description: 'Unique name for the agent page.' } },
+            required: ['name'],
+        },
+    },
+    {
+        name: 'browser_agent_switch',
+        description: 'Switch the active page to an existing named agent.',
+        inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string', description: 'Name of the agent to switch to.' } },
+            required: ['name'],
+        },
+    },
+    {
+        name: 'browser_agent_remove',
+        description: 'Remove and close a named agent page.',
+        inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string', description: 'Name of the agent to remove.' } },
+            required: ['name'],
+        },
+    },
+    {
+        name: 'browser_agent_list',
+        description: 'List all named agent pages and their URLs.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+
     // ── Request Interception ──────────────────────────────────────────────────
     {
         name: 'browser_intercept',
@@ -499,6 +538,7 @@ async function handleToolCall(name, args) {
             for (let attempt = 0; attempt <= retries; attempt++) {
                 try {
                     await page.goto(args.url, { waitUntil: 'load', timeout: 30000 });
+                    await saveState();
                     const suffix = attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : '';
                     return { content: [{ type: 'text', text: `Navigated to ${args.url}${suffix}` }] };
                 } catch (e) {
@@ -822,6 +862,26 @@ async function handleToolCall(name, args) {
 
             return { content: [{ type: 'text', text: `Clicked indices ${results.join(', ')} and clicked "${action}".` }] };
         }
+        // Named Pages / Agent Parallelism
+        case 'browser_agent_create': {
+            const created = await createNamedPage(args.name);
+            return { content: [{ type: 'text', text: created ? `Created and switched to agent "${args.name}".` : `Switched to existing agent "${args.name}".` }] };
+        }
+        case 'browser_agent_switch': {
+            const ok = await switchToNamedPage(args.name);
+            return { content: [{ type: 'text', text: ok ? `Switched to agent "${args.name}".` : `Agent "${args.name}" not found.` }] };
+        }
+        case 'browser_agent_remove': {
+            const removed = await removeNamedPage(args.name);
+            return { content: [{ type: 'text', text: removed ? `Removed agent "${args.name}".` : `Agent "${args.name}" not found.` }] };
+        }
+        case 'browser_agent_list': {
+            const agents = listNamedPages();
+            if (!agents.length) return { content: [{ type: 'text', text: 'No named agents. Use browser_agent_create to add one.' }] };
+            const text = agents.map(a => `${a.hasActivePage ? '*' : ' '} ${a.name} — ${a.url || '(blank)'}`).join('\n');
+            return { content: [{ type: 'text', text }] };
+        }
+
         // Request Interception
         case 'browser_intercept': {
             await addRoute(args.pattern, args.action, {

@@ -9,6 +9,8 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 - **Resilient Navigation**: Automatic retry with configurable attempts and backoff on network failures.
 - **Request Interception**: Block, mock, or modify requests at the network level — stub APIs, strip ads, inject auth headers.
 - **Session & Persistence**: Persistent browser contexts with named session save/load for both cookies and Web Storage (`localStorage`/`sessionStorage`).
+- **Crash Recovery**: Browser state is automatically persisted to disk. If the browser process dies, tabs and intercept rules are restored on the next tool call — no data loss.
+- **Parallel Agents**: Run independent named pages within a single browser context. Create, switch, and remove agents to handle multi-page workflows without interference.
 - **PDF Export**: Save pages to disk as PDF with a custom output path and accurate file size reporting.
 - **Smart Wait Strategy**: `browser_wait_for_load` for sites with WebSocket/SSE connections; `browser_wait_until_stable` for AJAX-heavy SPAs.
 - **Stealth and Evasion**: Anti-detection behavioral profiles (`stealth` vs `speed`), realistic user-agent spoofing, human-like mouse jitter and typing delay.
@@ -22,7 +24,7 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 
 | Tool | Description |
 |------|-------------|
-| `browser_navigate` | Navigate to a URL with automatic retry on failure (`retries`, `retryDelay`) |
+| `browser_navigate` | Navigate to a URL with automatic retry on failure (`retries`, `retryDelay`) — state is saved for crash recovery |
 | `browser_new_tab` | Open a new tab, optionally at a URL |
 | `browser_list_tabs` | List all open tabs and their active status |
 | `browser_switch_tab` | Switch active tab by index |
@@ -32,6 +34,17 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 | `browser_wait_for_url` | Wait until the URL matches a pattern (substring or regex) |
 | `browser_wait_until_stable` | Wait for networkidle — use for AJAX/SPA pages |
 | `browser_wait_for_load` | Wait for the `load` or `domcontentloaded` event — use for WebSocket/SSE pages |
+
+### Named Agents / Parallelism
+
+| Tool | Description |
+|------|-------------|
+| `browser_agent_create` | Create a new named agent page, or switch to an existing one |
+| `browser_agent_switch` | Switch active context to a named agent |
+| `browser_agent_remove` | Close and remove a named agent |
+| `browser_agent_list` | List all active named agents and their URLs |
+
+Named agents are independent pages within the same browser. Use them to parallelize workflows — each agent keeps its own navigation state, forms, and cookies. Create one, work on it, switch to another, come back later.
 
 **Wait strategy guide:**
 
