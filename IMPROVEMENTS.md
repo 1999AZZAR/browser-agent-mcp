@@ -22,19 +22,7 @@
 - Export session snapshots as JSON/HTML
 - Share sessions across agents via UUID/links
 
-## 4. Handling CAPTCHAs and Security Features
-**Issue:** DuckDuckGo ghostbuster challenges not handled → risk of block.
-
-**Suggestions:**
-- Integrate 2Captcha / bypassCAPTCHA
-- Rotating proxy pool
-
-## 5. Cross-Platform Workflow Orchestration
-**Issue:** File ops / system writes break the flow on non-Linux hosts.
-
-**Suggestions:**
-- Native OS modules (e.g., `terminal_transfer_file` cross-platform)
-- Reusable workflow templates: `search → click → download → analyze` with rollback
+**Status:** ✅ Implemented — `browser_export_state` (writes JSON to `exports/state-<ts>.json` with URL/title/AX/cookies/storage; `includeAxTree` flag for full tree) and `browser_list_sessions` for discovery.
 
 ## 6. Form Interaction and Input Handling
 **Issue:** Structured form fields lack robust tooling.
@@ -42,6 +30,8 @@
 **Suggestions:**
 - JSON-mapped form fill: `{ "username": "user@example.com" }`
 - Markdown/HTML content support for rich editors (CKEditor, etc.)
+
+**Status:** ✅ Implemented — `browser_fill_form` now accepts `typeAware: true` to auto-detect input types (date/number/email/tel/url/select/checkbox/radio/file/contenteditable) and use the right Playwright method with value coercion.
 
 ## 7. Accessibility Testing Integration
 **Issue:** No explicit a11y checks (screen reader, keyboard nav, contrast).
@@ -69,6 +59,8 @@
 **Suggestions:**
 - User-controllable truncation (`max_lines=500`)
 - Cache frequent URLs / search results
+
+**Status:** ✅ Implemented (truncation) — `browser_console_messages`, `browser_network_requests`, and `browser_get_text(all=true)` now accept `maxLines` to cap output, with a `... (N more, increase maxLines to see all)` suffix.
 
 ---
 

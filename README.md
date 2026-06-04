@@ -149,6 +149,7 @@ Rules persist across page navigations until `browser_clear_intercepts` is called
 |------|-------------|
 | `browser_save_session` | Save cookies (and optionally `localStorage`/`sessionStorage`) to a named file |
 | `browser_load_session` | Restore a saved session |
+| `browser_list_sessions` | List saved session files with size, cookie count, and origin |
 | `browser_set_agent_profile` | Switch between `stealth` and `speed` behavioral profiles |
 | `browser_handle_captcha` | Detect and manage CAPTCHA with optional manual hand-off |
 | `browser_solve_captcha_grid` | Click specific grid cells in a visual CAPTCHA |
@@ -161,6 +162,7 @@ Rules persist across page navigations until `browser_clear_intercepts` is called
 | Tool | Description |
 |------|-------------|
 | `browser_dismiss_popups` | Suppress modals, banners, and dialogs |
+| `browser_export_state` | Export current page state (URL/title/AX/cookies/storage) as a JSON snapshot for sharing or replay |
 
 ## Installation
 

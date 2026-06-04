@@ -14,3 +14,4 @@ quiz_debug.html
 .quiz-results.json
 cookies.json
 sessions/
+exports/

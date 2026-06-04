@@ -154,12 +154,13 @@ const TOOLS = [
     },
     {
         name: 'browser_fill_form',
-        description: 'Fill multiple form fields at once.',
+        description: 'Fill multiple form fields at once. Set typeAware=true to auto-detect input types (date, number, email, tel, url, select, checkbox, radio, file, contenteditable) and format values with the right Playwright method — much more reliable for structured forms than raw fill.',
         inputSchema: {
             type: 'object',
             properties: {
                 data: { type: 'object', description: 'Key-value pairs of selector: value' },
                 submit: { type: 'boolean', default: false, description: 'Whether to press Enter after filling' },
+                typeAware: { type: 'boolean', default: false, description: 'Detect input type and format values automatically.' },
             },
             required: ['data'],
         },
@@ -328,13 +329,14 @@ const TOOLS = [
     },
     {
         name: 'browser_get_text',
-        description: 'Read text from element(s).',
+        description: 'Read text from element(s). When all=true, returns up to maxLines results (default 100).',
         annotations: { readOnlyHint: true },
         inputSchema: {
             type: 'object',
             properties: {
                 selector: { type: 'string' },
                 all: { type: 'boolean', default: false },
+                maxLines: { type: 'number', description: 'Max number of elements to return when all=true. Default 100.' },
             },
             required: ['selector'],
         },
@@ -543,6 +545,26 @@ const TOOLS = [
         inputSchema: { type: 'object', properties: {} },
     },
 
+    // ── State Export & Session Discovery ──────────────────────────────────────
+    {
+        name: 'browser_export_state',
+        description: 'Export the current page state (URL, title, headings, text, interactive elements, cookies, localStorage, sessionStorage, optional AX tree) as a JSON file. Use to create a reproducible snapshot for sharing with other agents, debugging, or replay. Defaults to exports/state-<timestamp>.json.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                outputPath: { type: 'string', description: 'Absolute path for the JSON file. Defaults to exports/state-<timestamp>.json.' },
+                includeAxTree: { type: 'boolean', default: false, description: 'Include the full accessibility tree (significantly larger output).' },
+                includeStorage: { type: 'boolean', default: true, description: 'Include localStorage and sessionStorage.' },
+            },
+        },
+    },
+    {
+        name: 'browser_list_sessions',
+        description: 'List all saved session files in the sessions/ directory with name, size, cookie count, origin, and modified time. Read-only.',
+        annotations: { readOnlyHint: true },
+        inputSchema: { type: 'object', properties: {} },
+    },
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     {
         name: 'browser_dismiss_popups',
@@ -584,6 +606,7 @@ const TOOLS = [
                     description: 'Filter by message type.',
                 },
                 clear: { type: 'boolean', default: false, description: 'Clear the log after reading.' },
+                maxLines: { type: 'number', description: 'Maximum messages to return. Defaults to 100 (buffer size).' },
             },
         },
     },
@@ -597,6 +620,7 @@ const TOOLS = [
                 filter: { type: 'string', description: 'Optional URL substring to filter results.' },
                 statusMin: { type: 'number', description: 'Only return requests with status >= this value (e.g. 400 for errors).' },
                 clear: { type: 'boolean', default: false, description: 'Clear the log after reading.' },
+                maxLines: { type: 'number', description: 'Maximum requests to return. Defaults to 100.' },
             },
         },
     },
@@ -794,11 +818,82 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: `Clicked element with text "${args.text}".` }] };
         }
         case 'browser_fill_form': {
-            for (const [sel, val] of Object.entries(args.data)) {
-                await page.fill(sel, val);
+            const actions = [];
+            for (const [sel, rawVal] of Object.entries(args.data)) {
+                const value = String(rawVal);
+                if (!args.typeAware) {
+                    await page.fill(sel, value);
+                    actions.push('fill');
+                    continue;
+                }
+
+                const meta = await page.evaluate((s) => {
+                    const el = document.querySelector(s);
+                    if (!el) return null;
+                    return {
+                        tag: el.tagName,
+                        type: (el.getAttribute('type') || '').toLowerCase(),
+                        isContentEditable: el.getAttribute('contenteditable') === 'true' || el.isContentEditable,
+                    };
+                }, sel);
+
+                if (!meta) {
+                    await page.fill(sel, value);
+                    actions.push('fill (no element)');
+                    continue;
+                }
+
+                if (meta.isContentEditable) {
+                    await page.locator(sel).click();
+                    await page.keyboard.type(value, { delay: 30 });
+                    actions.push('type (contenteditable)');
+                } else if (meta.tag === 'SELECT') {
+                    const opts = await page.evaluate((s) => {
+                        const el = document.querySelector(s);
+                        return Array.from(el?.options || []).map(o => ({ value: o.value, label: o.text }));
+                    }, sel);
+                    const match = opts.find(o => o.value === value || o.label === value);
+                    await page.selectOption(sel, match?.value ?? value);
+                    actions.push(`select (${match ? 'matched' : 'fallback'})`);
+                } else if (meta.type === 'checkbox' || meta.type === 'radio') {
+                    const truthy = value === true || value === 'true' || value === '1' || value === 'on' || value === 'yes';
+                    if (truthy) await page.check(sel); else await page.uncheck(sel);
+                    actions.push(truthy ? 'check' : 'uncheck');
+                } else if (meta.type === 'file') {
+                    const files = value.split(',').map(s => s.trim()).filter(Boolean);
+                    await page.setInputFiles(sel, files);
+                    actions.push(`setInputFiles (${files.length})`);
+                } else if (meta.type === 'number' || meta.type === 'range') {
+                    const num = parseFloat(String(value).replace(/[^0-9.\-eE]/g, ''));
+                    await page.fill(sel, isNaN(num) ? value : String(num));
+                    actions.push('fill (number)');
+                } else if (meta.type === 'date' || meta.type === 'datetime-local') {
+                    const d = new Date(value);
+                    const iso = isNaN(d) ? value : d.toISOString().slice(0, meta.type === 'date' ? 10 : 16);
+                    await page.fill(sel, iso);
+                    actions.push('fill (date)');
+                } else if (meta.type === 'email') {
+                    const email = String(value).trim();
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                        throw new Error(`Invalid email value for ${sel}: ${email}`);
+                    }
+                    await page.fill(sel, email);
+                    actions.push('fill (email)');
+                } else if (meta.type === 'tel') {
+                    await page.fill(sel, String(value).replace(/[^\d+\-\s()]/g, ''));
+                    actions.push('fill (tel)');
+                } else if (meta.type === 'url') {
+                    const url = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+                    await page.fill(sel, url);
+                    actions.push('fill (url)');
+                } else {
+                    await page.fill(sel, value);
+                    actions.push('fill');
+                }
             }
             if (args.submit) await page.keyboard.press('Enter');
-            return { content: [{ type: 'text', text: `Filled ${Object.keys(args.data).length} fields${args.submit ? ' and submitted' : ''}.` }] };
+            const tag = args.typeAware ? ' (type-aware)' : '';
+            return { content: [{ type: 'text', text: `Filled ${actions.length} field(s)${tag}: ${actions.join(', ')}${args.submit ? ' + submitted' : ''}.` }] };
         }
         case 'browser_double_click':
             if (args.selector) await page.dblclick(args.selector);
@@ -876,7 +971,11 @@ async function handleToolCall(name, args) {
         case 'browser_get_text': {
             if (args.all) {
                 const texts = await page.evaluate((sel) => Array.from(document.querySelectorAll(sel)).map(el => el.innerText.trim()).filter(Boolean), args.selector);
-                return { content: [{ type: 'text', text: texts.join('\n---\n') }] };
+                const maxLines = args.maxLines ?? 100;
+                const truncated = texts.length > maxLines;
+                const limited = texts.slice(0, maxLines);
+                const suffix = truncated ? `\n... (${texts.length - maxLines} more, increase maxLines to see all)` : '';
+                return { content: [{ type: 'text', text: limited.join('\n---\n') + suffix }] };
             }
             const text = await page.evaluate((sel) => document.querySelector(sel)?.innerText?.trim() ?? null, args.selector);
             return { content: [{ type: 'text', text: text || '(not found)' }] };
@@ -1052,6 +1151,57 @@ async function handleToolCall(name, args) {
             }
 
             return { content: [{ type: 'text', text: `Session "${args.name}" loaded.` }] };
+        }
+        case 'browser_list_sessions': {
+            const sessionDir = path.join(__dirname, '../../sessions');
+            if (!fs.existsSync(sessionDir)) return { content: [{ type: 'text', text: 'No sessions saved yet.' }] };
+
+            const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.json'));
+            if (!files.length) return { content: [{ type: 'text', text: 'No sessions saved yet.' }] };
+
+            const lines = files.map(f => {
+                const full = path.join(sessionDir, f);
+                const stat = fs.statSync(full);
+                const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+                const cookieCount = Array.isArray(data) ? data.length : (data.cookies?.length || 0);
+                const hasStorage = !Array.isArray(data) && data.storage;
+                const origin = hasStorage ? data.storage.origin : '—';
+                return `${f.replace('.json', '')} | ${(stat.size / 1024).toFixed(1)} KB | ${cookieCount} cookies | origin: ${origin} | ${stat.mtime.toISOString()}`;
+            });
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        case 'browser_export_state': {
+            const exportDir = path.join(__dirname, '../../exports');
+            if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
+
+            const outputPath = args.outputPath || path.join(exportDir, `state-${Date.now()}.json`);
+            const dir = path.dirname(outputPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+            const baseState = await captureState(page);
+            const state = { ...baseState, capturedAt: new Date().toISOString() };
+
+            if (args.includeStorage !== false) {
+                state.storage = await page.evaluate(() => {
+                    try {
+                        return {
+                            localStorage: { ...localStorage },
+                            sessionStorage: { ...sessionStorage },
+                            origin: location.origin,
+                        };
+                    } catch (_) {
+                        return { localStorage: {}, sessionStorage: {}, origin: location.origin, error: 'storage access denied' };
+                    }
+                });
+            }
+
+            state.cookies = await page.context().cookies();
+
+            if (!args.includeAxTree) delete state.axTree;
+
+            fs.writeFileSync(outputPath, JSON.stringify(state, null, 2));
+            const sizeKb = (fs.statSync(outputPath).size / 1024).toFixed(1);
+            return { content: [{ type: 'text', text: `State exported to ${outputPath} (${sizeKb} KB).` }] };
         }
         case 'browser_solve_captcha_grid': {
             const challengeFrame = await page.waitForSelector('iframe[src*="bframe"]', { timeout: 5000 }).catch(() => null);
@@ -1230,8 +1380,12 @@ async function handleToolCall(name, args) {
             if (filterType !== 'all') messages = messages.filter(m => m.type === filterType);
             if (args.clear) clearConsoleMessages(page);
             if (!messages.length) return { content: [{ type: 'text', text: 'No console messages captured.' }] };
-            const lines = messages.map(m => `[${m.type}] ${m.text}${m.url ? ` (${m.url})` : ''}`);
-            return { content: [{ type: 'text', text: lines.join('\n') }] };
+            const maxLines = args.maxLines ?? 100;
+            const truncated = messages.length > maxLines;
+            const limited = messages.slice(0, maxLines);
+            const lines = limited.map(m => `[${m.type}] ${m.text}${m.url ? ` (${m.url})` : ''}`);
+            const suffix = truncated ? `\n... (${messages.length - maxLines} more, increase maxLines to see all)` : '';
+            return { content: [{ type: 'text', text: lines.join('\n') + suffix }] };
         }
         case 'browser_network_requests': {
             let requests = getNetworkRequests(page);
@@ -1239,8 +1393,12 @@ async function handleToolCall(name, args) {
             if (args.statusMin) requests = requests.filter(r => r.status >= args.statusMin);
             if (args.clear) clearNetworkRequests(page);
             if (!requests.length) return { content: [{ type: 'text', text: 'No network requests captured.' }] };
-            const lines = requests.map(r => `[${r.status}] ${r.method} ${r.url} — ${r.duration}ms ${r.contentType ? '(' + r.contentType + ')' : ''}`);
-            return { content: [{ type: 'text', text: lines.join('\n') }] };
+            const maxLines = args.maxLines ?? 100;
+            const truncated = requests.length > maxLines;
+            const limited = requests.slice(0, maxLines);
+            const lines = limited.map(r => `[${r.status}] ${r.method} ${r.url} — ${r.duration}ms ${r.contentType ? '(' + r.contentType + ')' : ''}`);
+            const suffix = truncated ? `\n... (${requests.length - maxLines} more, increase maxLines to see all)` : '';
+            return { content: [{ type: 'text', text: lines.join('\n') + suffix }] };
         }
 
         case 'browser_extract_schema': {
