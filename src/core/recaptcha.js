@@ -28,17 +28,22 @@ class RecaptchaSolver {
     // Check if checkbox click solved it
     if (await this._isSolved()) return { method: 'click', solved: true };
 
-    // Image challenge appeared
+    // Challenge appeared — detect type and return immediately
     const bframe = await this._getFrame('iframe[src*="bframe"]');
     if (!bframe) throw new Error('Challenge iframe not found');
 
     const challengeType = await this._detectChallengeType(bframe);
 
     if (challengeType === 'doscaptcha') throw new Error('Bot detected by reCAPTCHA');
-    if (challengeType !== 'image') throw new Error(`Unsupported challenge type: ${challengeType}`);
+    if (challengeType !== 'image' && challengeType !== 'audio') throw new Error(`Unsupported challenge type: ${challengeType}`);
 
-    const info = await this._getImageChallengeInfo(bframe);
-    return { method: 'image', solved: false, challenge: info };
+    if (challengeType === 'image') {
+      const info = await this._getImageChallengeInfo(bframe);
+      return { method: 'image', solved: false, challenge: info };
+    }
+
+    // Audio challenge detected
+    return { method: 'audio', solved: false, challenge: { type: 'audio' } };
   }
 
   /**
@@ -56,20 +61,38 @@ class RecaptchaSolver {
   async solveAudio() {
     const bframe = await this._getFrame('iframe[src*="bframe"]');
     if (!bframe) throw new Error('Challenge iframe not found');
+    console.log('[CAPTCHA] bframe found');
 
     const challengeType = await this._detectChallengeType(bframe);
+    console.log('[CAPTCHA] detected type:', challengeType);
     if (challengeType === 'doscaptcha') throw new Error('Bot detected by reCAPTCHA');
 
     // Switch from image to audio if needed
     if (challengeType === 'image') {
+      console.log('[CAPTCHA] switching to audio...');
       await this._switchToAudio(bframe);
       if (await this._isDetected()) throw new Error('Bot detected after audio switch');
+      console.log('[CAPTCHA] switched to audio');
+    }
+
+    // Click PLAY to load the audio source
+    const playBtn = await bframe.waitForSelector('#recaptcha-audio-play-button', { timeout: 5000 }).catch(() => null);
+    if (playBtn) {
+      console.log('[CAPTCHA] clicking PLAY...');
+      await this._humanClick(bframe, '#recaptcha-audio-play-button');
+      await this.page.waitForTimeout(3000);
+      console.log('[CAPTCHA] PLAY clicked, waiting for audio...');
+    } else {
+      console.log('[CAPTCHA] no PLAY button found');
     }
 
     const audioUrl = await this._getAudioUrl();
+    console.log('[CAPTCHA] audio URL:', audioUrl ? audioUrl.substring(0, 80) : 'null');
     if (!audioUrl) throw new Error('Could not find audio source URL');
 
+    console.log('[CAPTCHA] transcribing...');
     const text = await this._transcribeAudio(audioUrl);
+    console.log('[CAPTCHA] transcription:', text);
     await this._submitAnswer(text);
     await this.page.waitForTimeout(1500);
 
@@ -85,13 +108,23 @@ class RecaptchaSolver {
     ).catch(() => false);
     if (hasDoscaptcha) return 'doscaptcha';
 
-    const hasImage = await bframe.$('.rc-image-tile-wrapper, .rc-imageselect-challenge').catch(() => null);
-    if (hasImage) return 'image';
+    // Use evaluate to check actual visible state — most reliable for cross-origin frames
+    const type = await bframe.evaluate(() => {
+      // Audio challenge: has "Enter what you hear" input or PLAY button text
+      const audioInput = document.querySelector('#audio-response');
+      const playBtn = document.querySelector('#recaptcha-audio-play-button');
+      const pressPlayText = document.body.innerText.includes('Press PLAY to listen');
+      if (audioInput || playBtn || pressPlayText) return 'audio';
 
-    const hasAudio = await bframe.$('#audio-source').catch(() => null);
-    if (hasAudio) return 'audio';
+      // Image challenge: has tile wrapper or challenge container
+      const imgTiles = document.querySelector('.rc-image-tile-wrapper');
+      const imgChallenge = document.querySelector('.rc-imageselect-challenge');
+      if (imgTiles || imgChallenge) return 'image';
 
-    return 'unknown';
+      return 'unknown';
+    }).catch(() => 'unknown');
+
+    return type;
   }
 
   async _getImageChallengeInfo(bframe) {
@@ -166,14 +199,30 @@ class RecaptchaSolver {
 
   async _getAudioUrl() {
     const bframe = await this._getFrame('iframe[src*="bframe"]');
-    if (!bframe) return null;
+    if (!bframe) { console.log('[CAPTCHA] _getAudioUrl: no bframe'); return null; }
     const blocked = await bframe.evaluate(() =>
       document.body.innerText.includes('Try again later')
     ).catch(() => false);
     if (blocked) throw new Error('Bot detected after audio switch');
+
+    // Try multiple selectors for audio source
     const src = await bframe.waitForSelector('#audio-source', { timeout: 7000 }).catch(() => null);
-    if (!src) return null;
-    return await src.getAttribute('src');
+    if (src) {
+      const url = await src.getAttribute('src');
+      console.log('[CAPTCHA] _getAudioUrl: found #audio-source, url:', url ? url.substring(0, 80) : 'empty');
+      return url;
+    }
+
+    // Fallback: check for source element inside audio
+    const sourceEl = await bframe.$('audio source, #audio-source source').catch(() => null);
+    if (sourceEl) {
+      const url = await sourceEl.getAttribute('src');
+      console.log('[CAPTCHA] _getAudioUrl: found source element, url:', url ? url.substring(0, 80) : 'empty');
+      return url;
+    }
+
+    console.log('[CAPTCHA] _getAudioUrl: no audio element found');
+    return null;
   }
 
   /**

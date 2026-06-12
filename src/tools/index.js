@@ -458,13 +458,13 @@ const TOOLS = [
     },
     {
         name: 'browser_handle_captcha',
-        description: 'Detect and handle CAPTCHA challenges. For reCAPTCHA v2: tries checkbox auto-solve first. If image challenge appears, returns challenge prompt + screenshot for agent to visually identify matching tiles, then call browser_solve_captcha_grid(indices=[...]) with 1-based tile numbers. For audio, requires local whisper CLI (pip install openai-whisper).',
+        description: 'Detect and handle CAPTCHA. Default: clicks checkbox, detects challenge type, returns immediately. Image: returns screenshot + prompt for agent to solve visually via browser_solve_captcha_grid. Audio: set audio=true to attempt whisper solve (with timeout param). Verify: set verify=true to check if solved. Agent is never blocked — can always use browser_screenshot or other tools between calls.',
         inputSchema: {
             type: 'object',
             properties: {
-                verify: { type: 'boolean', default: false, description: 'Set to true to check if CAPTCHA was already solved after grid click.' },
-                audio: { type: 'boolean', default: false, description: 'Attempt audio challenge solving (requires local whisper CLI).' },
-                timeout: { type: 'number', default: 120000, description: 'Max time to wait (ms).' }
+                verify: { type: 'boolean', default: false, description: 'Check if CAPTCHA was already solved.' },
+                audio: { type: 'boolean', default: false, description: 'Attempt audio challenge solving via local whisper.' },
+                timeout: { type: 'number', default: 30000, description: 'Max time for audio solve (ms).' }
             }
         },
     },
@@ -1222,14 +1222,35 @@ async function handleToolCall(name, args) {
 
             const { indices, action } = args;
 
-            // Click each tile by its ID inside the bframe
+            // Click each tile inside the bframe using evaluate (avoids CSS selector issues with numeric IDs)
             for (const index of indices) {
-                const tileId = String(index - 1); // convert 1-based to 0-based ID
-                const tile = await bframe.$(`#${tileId}`);
-                if (!tile) {
-                    // Fallback: click by coordinates
-                    const row = Math.floor((index - 1) / 3);
-                    const col = (index - 1) % 3;
+                const tileIndex = index - 1; // convert 1-based to 0-based
+
+                // Find the tile element and get its bounding box via evaluate
+                const tileBox = await bframe.evaluate((idx) => {
+                    // reCAPTCHA tiles are in a table — try multiple selectors
+                    let tile = document.querySelector(`td[tabindex="${idx}"]`) ||
+                               document.querySelector(`.rc-imageselect-tile:nth-child(${idx + 1})`) ||
+                               document.querySelectorAll('table td')[idx];
+                    if (!tile) return null;
+                    const rect = tile.getBoundingClientRect();
+                    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+                }, tileIndex);
+
+                if (tileBox) {
+                    // Convert bframe coordinates to page coordinates
+                    const frameRect = await challengeFrame.boundingBox();
+                    if (frameRect) {
+                        const cx = frameRect.x + tileBox.x + tileBox.width / 2 + (Math.random() - 0.5) * 4;
+                        const cy = frameRect.y + tileBox.y + tileBox.height / 2 + (Math.random() - 0.5) * 4;
+                        await page.mouse.move(cx, cy, { steps: 8 });
+                        await page.waitForTimeout(150 + Math.random() * 200);
+                        await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
+                    }
+                } else {
+                    // Fallback: click by grid coordinates
+                    const row = Math.floor(tileIndex / 3);
+                    const col = tileIndex % 3;
                     const frameRect = await challengeFrame.boundingBox();
                     if (!frameRect) continue;
                     const margin = 15;
@@ -1239,15 +1260,6 @@ async function handleToolCall(name, args) {
                     await page.mouse.move(cx, cy, { steps: 8 });
                     await page.waitForTimeout(150 + Math.random() * 200);
                     await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
-                } else {
-                    const box = await tile.boundingBox();
-                    if (box) {
-                        const cx = box.x + box.width / 2 + (Math.random() - 0.5) * 4;
-                        const cy = box.y + box.height / 2 + (Math.random() - 0.5) * 4;
-                        await page.mouse.move(cx, cy, { steps: 8 });
-                        await page.waitForTimeout(150 + Math.random() * 200);
-                        await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
-                    }
                 }
                 await page.waitForTimeout(200 + Math.random() * 400);
             }
@@ -1323,16 +1335,21 @@ async function handleToolCall(name, args) {
                 return { content: [{ type: 'text', text: solved ? 'CAPTCHA solved.' : 'CAPTCHA not yet solved.' }], isError: !solved };
             }
 
-            // Audio mode — try to solve via local whisper CLI
+            // Audio mode — try to solve via local whisper (with timeout)
             if (args.audio) {
+                const timeoutMs = args.timeout || 30000;
                 try {
-                    const result = await solver.solveAudio();
+                    const result = await Promise.race([
+                        solver.solveAudio(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error(`Audio solve timed out after ${timeoutMs}ms`)), timeoutMs))
+                    ]);
                     return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}. Transcription: "${result.transcription}"` }] };
                 } catch (e) {
                     return { content: [{ type: 'text', text: `Audio CAPTCHA error: ${e.message}` }], isError: true };
                 }
             }
 
+            // Default: click checkbox, detect challenge, return immediately
             let result;
             try {
                 result = await solver.solve();
@@ -1344,7 +1361,7 @@ async function handleToolCall(name, args) {
                 return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}.` }] };
             }
 
-            // Image challenge — return info + screenshot for agent to solve
+            // Image challenge — return screenshot for agent to solve visually
             if (result.challenge?.type === 'image') {
                 const ss = await page.screenshot({ type: 'png' });
                 const content = [
@@ -1354,7 +1371,7 @@ async function handleToolCall(name, args) {
                 return { content };
             }
 
-            return { content: [{ type: 'text', text: `Unexpected challenge: ${JSON.stringify(result.challenge)}` }], isError: true };
+            return { content: [{ type: 'text', text: `Challenge detected but not solvable. Try browser_screenshot to inspect.` }], isError: true };
         }
 
         // Helpers
