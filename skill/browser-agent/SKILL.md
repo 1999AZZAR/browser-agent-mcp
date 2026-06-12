@@ -12,6 +12,7 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Task | Primary Call | Fallback |
 |------|-------------|---------|
 | Navigate to URL | `browser_navigate(url)` | `browser_navigate(url, retries=2)` |
+| Search the web | `browser_search(query)` | `browser_navigate('https://duckduckgo.com/?q=...')` |
 | Sense page state (structure only) | `browser_get_state()` | `browser_observe()` |
 | Sense page state (with visual) | `browser_get_state(screenshot=true)` | `browser_screenshot()` |
 | Enumerate interactable elements only | `browser_observe()` | `browser_get_state()` |
@@ -34,7 +35,7 @@ The skill is the entry point. The power is in `mcp__browser-agent__*` tools — 
 | Remove named agent | `browser_agent_remove(name)` | — |
 | List all agents | `browser_agent_list()` | — |
 | Agent Profile | `browser_set_agent_profile(profile='stealth')` | — |
-| Handle CAPTCHA | `browser_handle_captcha(wait=true)` | — |
+| Handle CAPTCHA | `browser_handle_captcha()` | auto-switches to DuckDuckGo on Google CAPTCHA |
 | Click element | `browser_click(selector)` | `browser_click(x, y)` |
 | Type text | `browser_type(selector, text, delay=120)` | — |
 | Select dropdown | `browser_select(selector, value)` | `browser_evaluate(script)` |

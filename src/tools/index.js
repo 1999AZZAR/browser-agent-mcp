@@ -22,7 +22,7 @@ const TOOLS = [
     // ── Navigation & Tabs ─────────────────────────────────────────────────────
     {
         name: 'browser_navigate',
-        description: 'Navigate to a URL. Retries automatically on network failure.',
+        description: 'Navigate to a URL. Retries automatically on network failure. Auto-switches to DuckDuckGo if Google shows CAPTCHA.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -31,6 +31,17 @@ const TOOLS = [
                 retryDelay: { type: 'number', default: 1000, description: 'Base delay in ms between retries (multiplied by attempt number).' },
             },
             required: ['url'],
+        },
+    },
+    {
+        name: 'browser_search',
+        description: 'Search the web using DuckDuckGo (no CAPTCHA). Returns search results. Use this instead of navigating to Google directly.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                query: { type: 'string', description: 'Search query' },
+            },
+            required: ['query'],
         },
     },
     {
@@ -727,6 +738,19 @@ async function handleToolCall(name, args) {
             for (let attempt = 0; attempt <= retries; attempt++) {
                 try {
                     await page.goto(args.url, { waitUntil: 'load', timeout: 30000 });
+                    // Auto-fallback: if Google shows CAPTCHA, switch to DuckDuckGo
+                    const url = page.url();
+                    if (url.includes('google.com/sorry') || url.includes('google.com/search')) {
+                        const hasCaptcha = await page.$('iframe[title="reCAPTCHA"]').catch(() => null);
+                        if (hasCaptcha && url.includes('/sorry')) {
+                            const query = new URL(args.url).searchParams.get('q') || '';
+                            if (query) {
+                                await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`, { waitUntil: 'load', timeout: 15000 });
+                                await saveState();
+                                return { content: [{ type: 'text', text: `Google blocked with CAPTCHA. Switched to DuckDuckGo for: "${query}"` }] };
+                            }
+                        }
+                    }
                     await saveState();
                     recorder.record('navigate', { url: args.url });
                     const suffix = attempt > 0 ? ` (succeeded on attempt ${attempt + 1})` : '';
@@ -737,6 +761,18 @@ async function handleToolCall(name, args) {
                 }
             }
             return { content: [{ type: 'text', text: `Failed to navigate to ${args.url} after ${retries + 1} attempt(s): ${lastError.message}` }], isError: true };
+        }
+        case 'browser_search': {
+            const query = args.query;
+            const ddgUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+            try {
+                await page.goto(ddgUrl, { waitUntil: 'load', timeout: 20000 });
+                await saveState();
+                recorder.record('navigate', { url: ddgUrl });
+                return { content: [{ type: 'text', text: `Searched DuckDuckGo for: "${query}"` }] };
+            } catch (e) {
+                return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
+            }
         }
         case 'browser_new_tab': {
             const newPg = await newPage();
