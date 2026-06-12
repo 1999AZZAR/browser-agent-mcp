@@ -193,7 +193,10 @@ class RecaptchaSolver {
 
       const { pipeline } = require('@xenova/transformers');
       const transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
-      const result = await transcriber(wav);
+      const audioBuffer = fs.readFileSync(wav);
+      const int16 = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.byteLength / 2);
+      const float32 = Float32Array.from(int16, s => s / 32768);
+      const result = await transcriber(float32, { sampling_rate: 16000 });
       return result.text.trim();
     } finally {
       for (const p of [mp3, wav]) {
