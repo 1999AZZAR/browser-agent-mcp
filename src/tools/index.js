@@ -458,24 +458,23 @@ const TOOLS = [
     },
     {
         name: 'browser_handle_captcha',
-        description: 'Auto-solve reCAPTCHA v2 via audio transcription (uses ffmpeg + OpenAI Whisper or Google Speech API). Falls back to manual wait on failure. Set OPENAI_API_KEY for best transcription accuracy.',
+        description: 'Detect and handle CAPTCHA challenges. For reCAPTCHA v2: tries checkbox auto-solve first. If image challenge appears, returns challenge text + screenshot for agent to analyze tiles. Agent then calls browser_solve_captcha_grid with matching tile indices. For audio challenges, uses ffmpeg + speech recognition.',
         inputSchema: {
             type: 'object',
             properties: {
-                wait: { type: 'boolean', default: true, description: 'Whether to wait for manual solving if automated attempt fails.' },
-                timeout: { type: 'number', default: 120000, description: 'Max time to wait for CAPTCHA resolution (ms).' }
+                verify: { type: 'boolean', default: false, description: 'Set to true to check if CAPTCHA was already solved. Skips detection.' },
+                timeout: { type: 'number', default: 120000, description: 'Max time to wait (ms).' }
             }
         },
     },
     {
         name: 'browser_solve_captcha_grid',
-        description: 'Solve a visual CAPTCHA by clicking specific grid indices.',
+        description: 'Click image CAPTCHA grid tiles by index (1-based, 1-9 for 3x3 grid). Use after browser_handle_captcha returns an image challenge. Call browser_handle_captcha again to verify result.',
         inputSchema: {
             type: 'object',
             properties: {
-                indices: { type: 'array', items: { type: 'number' }, description: '1-based indices of the grid to click.' },
-                gridSize: { type: 'number', enum: [3, 4], default: 3, description: 'Size of the grid (3x3 or 4x4).' },
-                action: { type: 'string', enum: ['verify', 'next', 'skip'], default: 'verify', description: 'Action button to click after selecting images.' }
+                indices: { type: 'array', items: { type: 'number' }, description: '1-based tile indices to click (e.g., [1, 3, 5] for tiles 0, 2, 4 in the grid).' },
+                action: { type: 'string', enum: ['verify'], default: 'verify', description: 'Action to take after clicking tiles (only verify supported).' }
             },
             required: ['indices'],
         },
@@ -1216,43 +1215,54 @@ async function handleToolCall(name, args) {
         case 'browser_solve_captcha_grid': {
             const challengeFrame = await page.waitForSelector('iframe[src*="bframe"]', { timeout: 5000 }).catch(() => null);
             if (!challengeFrame) return { content: [{ type: 'text', text: 'Challenge frame not found.' }], isError: true };
-            
-            const rect = await challengeFrame.boundingBox();
-            if (!rect) return { content: [{ type: 'text', text: 'Could not determine challenge frame position.' }], isError: true };
 
-            const { gridSize, indices, action } = args;
-            const margin = 15; // padding inside frame
-            const gridWidth = 400 - (margin * 2);
-            const gridHeight = 400 - (margin * 2); // Images usually in top 400px
-            const cellSize = gridWidth / gridSize;
+            const bframe = await challengeFrame.contentFrame();
+            if (!bframe) return { content: [{ type: 'text', text: 'Could not access challenge frame.' }], isError: true };
 
-            const results = [];
+            const { indices, action } = args;
+
+            // Click each tile by its ID inside the bframe
             for (const index of indices) {
-                const row = Math.floor((index - 1) / gridSize);
-                const col = (index - 1) % gridSize;
-                
-                const centerX = rect.x + margin + (col * cellSize) + (cellSize / 2);
-                const centerY = rect.y + margin + (row * cellSize) + (cellSize / 2);
-                
-                // Add human jitter
-                const clickX = centerX + (Math.random() - 0.5) * 10;
-                const clickY = centerY + (Math.random() - 0.5) * 10;
-
-                await page.mouse.move(clickX, clickY, { steps: 10 });
-                await page.waitForTimeout(Math.random() * 300 + 200);
-                await page.mouse.click(clickX, clickY, { delay: Math.random() * 200 + 100 });
-                results.push(index);
-                await page.waitForTimeout(Math.random() * 500 + 300);
+                const tileId = String(index - 1); // convert 1-based to 0-based ID
+                const tile = await bframe.$(`#${tileId}`);
+                if (!tile) {
+                    // Fallback: click by coordinates
+                    const row = Math.floor((index - 1) / 3);
+                    const col = (index - 1) % 3;
+                    const frameRect = await challengeFrame.boundingBox();
+                    if (!frameRect) continue;
+                    const margin = 15;
+                    const cellSize = (400 - margin * 2) / 3;
+                    const cx = frameRect.x + margin + col * cellSize + cellSize / 2;
+                    const cy = frameRect.y + margin + row * cellSize + cellSize / 2;
+                    await page.mouse.move(cx, cy, { steps: 8 });
+                    await page.waitForTimeout(150 + Math.random() * 200);
+                    await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
+                } else {
+                    const box = await tile.boundingBox();
+                    if (box) {
+                        const cx = box.x + box.width / 2 + (Math.random() - 0.5) * 4;
+                        const cy = box.y + box.height / 2 + (Math.random() - 0.5) * 4;
+                        await page.mouse.move(cx, cy, { steps: 8 });
+                        await page.waitForTimeout(150 + Math.random() * 200);
+                        await page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
+                    }
+                }
+                await page.waitForTimeout(200 + Math.random() * 400);
             }
 
-            // Click action button
-            const actionX = rect.x + (action === 'verify' ? 330 : 330); // Approximate verify button location
-            const actionY = rect.y + 540;
-            await page.mouse.move(actionX, actionY, { steps: 10 });
-            await page.waitForTimeout(Math.random() * 400 + 200);
-            await page.mouse.click(actionX, actionY, { delay: Math.random() * 200 + 150 });
+            // Click verify button
+            const verifyBtn = await bframe.$('#recaptcha-verify-button');
+            if (verifyBtn) {
+                const box = await verifyBtn.boundingBox();
+                if (box) {
+                    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+                    await page.waitForTimeout(200 + Math.random() * 400);
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 80 + Math.random() * 80 });
+                }
+            }
 
-            return { content: [{ type: 'text', text: `Clicked indices ${results.join(', ')} and clicked "${action}".` }] };
+            return { content: [{ type: 'text', text: `Clicked tile indices ${indices.join(', ')} and clicked "${action || 'verify'}". Call browser_handle_captcha to check result.` }] };
         }
         // Named Pages / Agent Parallelism
         case 'browser_agent_create': {
@@ -1304,36 +1314,36 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: `Agent profile set to ${args.profile}.` }] };
         }
         case 'browser_handle_captcha': {
-            const { CAPTCHA_SELECTORS } = require('../utils/selectors');
-            const detected = await page.evaluate((sel) => !!document.querySelector(sel), CAPTCHA_SELECTORS);
-            if (!detected) return { content: [{ type: 'text', text: 'No CAPTCHA detected.' }] };
+            const solver = new RecaptchaSolver(page);
 
-            const timeout = args.timeout || 120000;
-            const start = Date.now();
+            // Verify mode — check if already solved
+            if (args.verify) {
+                const solved = await solver.verifySolved();
+                return { content: [{ type: 'text', text: solved ? 'CAPTCHA solved.' : 'CAPTCHA not yet solved.' }], isError: !solved };
+            }
 
-            // Use auto solver first
+            let result;
             try {
-                const solver = new RecaptchaSolver(page);
-                const result = await solver.solve();
-                return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}: ${result.solved}` }] };
+                result = await solver.solve();
             } catch (e) {
-                console.error(`[Browser] Auto CAPTCHA solve failed: ${e.message}`);
+                return { content: [{ type: 'text', text: `CAPTCHA error: ${e.message}` }], isError: true };
             }
 
-            // Fallback: wait for manual solving
-            if (args.wait !== false) {
-                const remaining = timeout - (Date.now() - start);
-                if (remaining > 0) {
-                    try {
-                        await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: remaining });
-                        return { content: [{ type: 'text', text: 'CAPTCHA resolved (manual intervention).' }] };
-                    } catch {
-                        return { content: [{ type: 'text', text: 'Timeout waiting for CAPTCHA resolution.' }], isError: true };
-                    }
-                }
+            if (result.solved) {
+                return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}.` }] };
             }
 
-            return { content: [{ type: 'text', text: 'CAPTCHA detected. Auto-solve failed and manual fallback not requested.' }], isError: true };
+            // Image challenge — return info + screenshot for agent to solve
+            if (result.challenge?.type === 'image') {
+                const ss = await page.screenshot({ type: 'png' });
+                const content = [
+                    { type: 'text', text: `Image challenge: "${result.challenge.prompt}"\nGrid: ${result.challenge.gridSize}x${result.challenge.gridSize} (${result.challenge.tileCount} tiles)\nDetermine which tiles contain the target object, then call browser_solve_captcha_grid(indices=[1-based tile numbers]) to click them. After clicking verify, call browser_handle_captcha(verify=true) to check result.` },
+                    { type: 'image', data: ss.toString('base64'), mimeType: 'image/png' }
+                ];
+                return { content };
+            }
+
+            return { content: [{ type: 'text', text: `Unexpected challenge: ${JSON.stringify(result.challenge)}` }], isError: true };
         }
 
         // Helpers
