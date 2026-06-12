@@ -7,6 +7,17 @@ description: "Professional browser automation agent for web navigation, interact
 
 The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **64 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
+## Companion MCPs
+
+This browser agent works best paired with other MCPs for full power:
+
+| MCP | Use With Browser Agent For |
+|-----|---------------------------|
+| **research-assistant** | Deep research, multi-source analysis, academic search, fact-checking, content summarization. Browser agent handles navigation/interaction; research-assistant handles analysis/extraction. |
+| **search-cluster** | Aggregated search across Google CSE, GNews, Wikipedia, Reddit when DuckDuckGo isn't enough. |
+
+**Workflow**: Use `browser_search(query)` for quick lookups. For deep research, chain browser navigation with `research-assistant` tools for sentiment analysis, keyword extraction, citation formatting, and multi-query analysis.
+
 ## Dispatch Table
 
 | Task | Primary Call | Fallback |
