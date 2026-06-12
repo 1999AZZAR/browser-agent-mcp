@@ -7,6 +7,7 @@ const {
     getConsoleMessages, getNetworkRequests, clearConsoleMessages, clearNetworkRequests,
     healthCheck,
 } = require('../core/browser');
+const { RecaptchaSolver } = require('../core/recaptcha');
 const { captureState, observeInteractable, getElementByRef } = require('../core/state');
 const cache = require('../core/cache');
 const recorder = require('../core/recorder');
@@ -457,12 +458,12 @@ const TOOLS = [
     },
     {
         name: 'browser_handle_captcha',
-        description: 'Attempt to detect and handle CAPTCHA challenges.',
+        description: 'Auto-solve reCAPTCHA v2 via audio transcription (uses ffmpeg + OpenAI Whisper or Google Speech API). Falls back to manual wait on failure. Set OPENAI_API_KEY for best transcription accuracy.',
         inputSchema: {
             type: 'object',
             properties: {
                 wait: { type: 'boolean', default: true, description: 'Whether to wait for manual solving if automated attempt fails.' },
-                timeout: { type: 'number', default: 60000, description: 'Max time to wait for manual solving (ms).' }
+                timeout: { type: 'number', default: 120000, description: 'Max time to wait for CAPTCHA resolution (ms).' }
             }
         },
     },
@@ -1305,40 +1306,34 @@ async function handleToolCall(name, args) {
         case 'browser_handle_captcha': {
             const { CAPTCHA_SELECTORS } = require('../utils/selectors');
             const detected = await page.evaluate((sel) => !!document.querySelector(sel), CAPTCHA_SELECTORS);
-            
             if (!detected) return { content: [{ type: 'text', text: 'No CAPTCHA detected.' }] };
 
-            // Try to find and click reCAPTCHA checkbox
-            const solved = await page.evaluate(async () => {
-                const checkbox = document.querySelector('iframe[src*="recaptcha"]')?.contentWindow?.document?.querySelector('.recaptcha-checkbox-border');
-                if (checkbox) {
-                    checkbox.click();
-                    return true;
-                }
-                return false;
-            }).catch(() => false);
+            const timeout = args.timeout || 120000;
+            const start = Date.now();
 
-            if (solved) {
-                console.error('[Browser] CAPTCHA checkbox clicked. Checking for immediate resolution...');
-                try {
-                    await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: 5000 });
-                    return { content: [{ type: 'text', text: 'CAPTCHA solved automatically.' }] };
-                } catch (e) {
-                    console.error('[Browser] CAPTCHA still present after click. Full challenge likely required.');
+            // Use auto solver first
+            try {
+                const solver = new RecaptchaSolver(page);
+                const result = await solver.solve();
+                return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}: ${result.solved}` }] };
+            } catch (e) {
+                console.error(`[Browser] Auto CAPTCHA solve failed: ${e.message}`);
+            }
+
+            // Fallback: wait for manual solving
+            if (args.wait !== false) {
+                const remaining = timeout - (Date.now() - start);
+                if (remaining > 0) {
+                    try {
+                        await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: remaining });
+                        return { content: [{ type: 'text', text: 'CAPTCHA resolved (manual intervention).' }] };
+                    } catch {
+                        return { content: [{ type: 'text', text: 'Timeout waiting for CAPTCHA resolution.' }], isError: true };
+                    }
                 }
             }
 
-            if (args.wait) {
-                try {
-                    console.error('[Browser] CAPTCHA detected or challenge appeared. Waiting for manual solving...');
-                    await page.waitForFunction((sel) => !document.querySelector(sel), CAPTCHA_SELECTORS, { timeout: args.timeout || 60000 });
-                    return { content: [{ type: 'text', text: 'CAPTCHA resolved (manual intervention detected).' }] };
-                } catch (e) {
-                    return { content: [{ type: 'text', text: 'Timeout waiting for CAPTCHA to be solved manually.' }], isError: true };
-                }
-            }
-
-            return { content: [{ type: 'text', text: 'CAPTCHA detected. Manual intervention required.' }], isError: true };
+            return { content: [{ type: 'text', text: 'CAPTCHA detected. Auto-solve failed and manual fallback not requested.' }], isError: true };
         }
 
         // Helpers
