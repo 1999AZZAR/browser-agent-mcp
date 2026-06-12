@@ -1,55 +1,43 @@
 # CAPTCHA Handling
 
-The browser-agent has a multi-layered CAPTCHA handling strategy:
+## Flow
+
+```
+browser_handle_captcha()
+  ├─ Click reCAPTCHA checkbox
+  ├─ If solved → done
+  ├─ If image challenge → return { prompt, grid, screenshot }
+  │    Agent analyzes screenshot, calls:
+  │    browser_solve_captcha_grid(indices=[1-based tile numbers])
+  │    Then verifies:
+  │    browser_handle_captcha(verify=true)
+  └─ If audio (optional, needs local whisper):
+       browser_handle_captcha(audio=true)
+```
 
 ## Tools
 
 ### `browser_handle_captcha`
-Auto-solves reCAPTCHA v2 via audio transcription. Uses `ffmpeg` + either OpenAI Whisper or Google Speech API. Falls back to manual wait on failure.
+Three modes:
+- **Solve mode** (default): detect reCAPTCHA, click checkbox, return result
+- **Verify mode** (`verify=true`): check if already solved after grid click
+- **Audio mode** (`audio=true`): try to solve via local whisper CLI
 
-**Flow:**
-1. Detect reCAPTCHA iframe on page
-2. Click the "I'm not a robot" checkbox (often solves for low-risk traffic)
-3. If image challenge appears, switch to audio challenge
-4. Download MP3, convert to WAV via `ffmpeg`, transcribe
-5. Submit answer, verify
-
-**Backends (tried in order):**
-- `OPENAI_API_KEY` set → OpenAI Whisper API (recommended, best accuracy)
-- Otherwise → Google free Speech API (same as Python `speech_recognition` library)
-
-**Limitations:**
-- Google's server-side bot detection may block the audio challenge switch on aggressive deployments
-- The demo page (`google.com/recaptcha/api2/demo`) is known to be blocked
-- May work better on real websites with standard reCAPTCHA configuration
-- Always falls back to manual waiting if auto-solve fails
+For image challenge: returns prompt text, grid info, and screenshot.
 
 ### `browser_solve_captcha_grid`
-Manually specify grid click positions for visual CAPTCHAs. Not automated — requires the AI agent to determine which grid cells to click.
+Click image grid tiles by index. Uses 1-based indices (1-9 for 3x3 grid).
+Click tiles that match the challenge prompt, then `browser_handle_captcha(verify=true)`.
 
-## Environment Variables
+## Audio (Optional)
+Requires local whisper CLI (no API key needed):
+```bash
+pip install openai-whisper
+# or
+brew install whisper-cpp
+```
 
+## Env
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | Enable OpenAI Whisper for audio transcription (highest accuracy) |
-| `GOOGLE_SPEECH_API_KEY` | Custom Google Speech API key (default uses built-in key) |
-| `BROWSER_HEADLESS` | Set to `true` for headless mode (may increase bot detection) |
-
-## Testing
-
-```bash
-# Test with Google's demo page
-node -e "
-const { chromium } = require('playwright');
-const { RecaptchaSolver } = require('./src/core/recaptcha');
-(async () => {
-  const browser = await chromium.launch({ headless: false });
-  const page = await browser.newPage();
-  await page.goto('https://www.google.com/recaptcha/api2/demo');
-  const solver = new RecaptchaSolver(page);
-  const result = await solver.solve().catch(e => e.message);
-  console.log('Result:', result);
-  await browser.close();
-})();
-"
-```
+| None | All features work without API keys |

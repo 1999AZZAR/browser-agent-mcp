@@ -458,11 +458,12 @@ const TOOLS = [
     },
     {
         name: 'browser_handle_captcha',
-        description: 'Detect and handle CAPTCHA challenges. For reCAPTCHA v2: tries checkbox auto-solve first. If image challenge appears, returns challenge text + screenshot for agent to analyze tiles. Agent then calls browser_solve_captcha_grid with matching tile indices. For audio challenges, uses ffmpeg + speech recognition.',
+        description: 'Detect and handle CAPTCHA challenges. For reCAPTCHA v2: tries checkbox auto-solve first. If image challenge appears, returns challenge prompt + screenshot for agent to visually identify matching tiles, then call browser_solve_captcha_grid(indices=[...]) with 1-based tile numbers. For audio, requires local whisper CLI (pip install openai-whisper).',
         inputSchema: {
             type: 'object',
             properties: {
-                verify: { type: 'boolean', default: false, description: 'Set to true to check if CAPTCHA was already solved. Skips detection.' },
+                verify: { type: 'boolean', default: false, description: 'Set to true to check if CAPTCHA was already solved after grid click.' },
+                audio: { type: 'boolean', default: false, description: 'Attempt audio challenge solving (requires local whisper CLI).' },
                 timeout: { type: 'number', default: 120000, description: 'Max time to wait (ms).' }
             }
         },
@@ -1320,6 +1321,16 @@ async function handleToolCall(name, args) {
             if (args.verify) {
                 const solved = await solver.verifySolved();
                 return { content: [{ type: 'text', text: solved ? 'CAPTCHA solved.' : 'CAPTCHA not yet solved.' }], isError: !solved };
+            }
+
+            // Audio mode — try to solve via local whisper CLI
+            if (args.audio) {
+                try {
+                    const result = await solver.solveAudio();
+                    return { content: [{ type: 'text', text: `CAPTCHA solved via ${result.method}. Transcription: "${result.transcription}"` }] };
+                } catch (e) {
+                    return { content: [{ type: 'text', text: `Audio CAPTCHA error: ${e.message}` }], isError: true };
+                }
             }
 
             let result;
