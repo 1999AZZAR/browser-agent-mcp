@@ -14,9 +14,18 @@ const recorder = require('../core/recorder');
 const fs = require('fs');
 const path = require('path');
 
+// Phase 3: OCR
+let Tesseract;
+try { Tesseract = require('tesseract.js'); } catch (_) { Tesseract = null; }
+
 const AGENT_CONFIG = {
     profile: 'stealth', // 'stealth' or 'speed'
 };
+
+// Phase 2: API capture state
+let capturedAPIs = [];
+let apiCaptureActive = false;
+let apiCapturePattern = null;
 
 const TOOLS = [
     // ── Navigation & Tabs ─────────────────────────────────────────────────────
@@ -526,6 +535,134 @@ const TOOLS = [
         inputSchema: { type: 'object', properties: {} },
     },
 
+    // ── Phase 2 Enhancements ─────────────────────────────────────────────────
+    {
+        name: 'browser_intercept_api',
+        description: 'Capture API responses matching a URL pattern. Stores responses in memory for later retrieval. Use to extract quiz data, form options, or any XHR/fetch response without DOM scraping.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'URL pattern to match (glob or regex). E.g. "**/api/**", "**/exam*"' },
+                action: { type: 'string', enum: ['start', 'stop', 'get'], default: 'start', description: '"start" begins capturing. "stop" stops and returns all captured. "get" returns captured without changing state.' },
+                reloadPage: { type: 'boolean', default: false, description: 'If true, reload page after starting capture to trigger fresh API calls.' },
+            },
+            required: ['pattern'],
+        },
+    },
+    {
+        name: 'browser_batch_answer_quiz',
+        description: 'Batch answer multiple quiz questions in a single tool call. Navigates through pages, selects answers, and optionally submits. Handles radio and checkbox questions. Returns results with errors.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                answers: {
+                    type: 'array',
+                    description: 'Array of answers. Each entry: {q: <questionIndex>, option: <optionIndex>} or {q: <questionIndex>, options: [<indices>]} for checkboxes.',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            q: { type: 'number', description: '0-based question index on the current page' },
+                            option: { type: 'number', description: '0-based option index for radio questions' },
+                            options: { type: 'array', items: { type: 'number' }, description: 'Array of indices for checkbox questions' },
+                        },
+                        required: ['q'],
+                    },
+                },
+                submitAfter: { type: 'boolean', default: false, description: 'Click submit button after answering all questions.' },
+                nextSelector: { type: 'string', description: 'CSS selector for the "Next" button. Auto-detected if not provided.' },
+                submitSelector: { type: 'string', description: 'CSS selector for the "Submit" button. Auto-detected if not provided.' },
+            },
+            required: ['answers'],
+        },
+    },
+    {
+        name: 'browser_switch_to_new_tab',
+        description: 'Detect and switch to a newly opened tab/popup. Returns the new tab URL and switches focus to it.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                urlPattern: { type: 'string', description: 'Optional URL pattern to match the new tab. If not provided, switches to most recent new tab.' },
+                timeout: { type: 'number', default: 10000, description: 'Max wait time in ms for new tab to appear.' },
+            },
+        },
+    },
+    {
+        name: 'browser_get_captured_apis',
+        description: 'Retrieve all API responses captured by browser_intercept_api. Returns structured JSON data.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Optional filter pattern to match against captured URLs.' },
+                clearAfter: { type: 'boolean', default: false, description: 'Clear captured data after retrieval.' },
+            },
+        },
+    },
+
+    // ── Phase 3 Enhancements ─────────────────────────────────────────────────
+    {
+        name: 'browser_ocr',
+        description: 'Extract text from a screenshot or code block using OCR (Tesseract.js). Use for reading code images, CAPTCHAs, or any visual text that is not accessible via DOM.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector to screenshot (e.g. ".code-block"). If omitted, screenshots full page.' },
+                language: { type: 'string', default: 'eng', description: 'Tesseract language code (eng, ind, etc.)' },
+                preprocess: { type: 'string', enum: ['none', 'threshold', 'grayscale', 'sharpen'], default: 'threshold', description: 'Image preprocessing for better OCR accuracy.' },
+                returnImage: { type: 'boolean', default: false, description: 'Also return the preprocessed image as base64.' },
+            },
+        },
+    },
+    {
+        name: 'browser_record_macro',
+        description: 'Control macro recording. Start recording user actions, stop and get the recorded script, or clear the recording buffer.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['start', 'stop', 'clear', 'list', 'export'], required: true },
+                name: { type: 'string', description: 'Name for the macro (used in export/save).' },
+                format: { type: 'string', enum: ['playwright', 'json', 'actions'], default: 'playwright', description: 'Export format.' },
+                save: { type: 'boolean', default: false, description: 'Save to user_data/macros/ directory.' },
+            },
+            required: ['action'],
+        },
+    },
+    {
+        name: 'browser_replay_macro',
+        description: 'Replay a recorded macro or a list of actions. Can replay from JSON actions or a saved macro file.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                actions: { type: 'array', description: 'Array of action objects to replay. Each: {type, args}' },
+                macroName: { type: 'string', description: 'Name of a saved macro to replay from user_data/macros/.' },
+                speed: { type: 'string', enum: ['fast', 'normal', 'slow'], default: 'normal', description: 'Replay speed.' },
+                dryRun: { type: 'boolean', default: false, description: 'If true, log actions without executing.' },
+            },
+        },
+    },
+    {
+        name: 'browser_parallel_execute',
+        description: 'Execute actions on multiple named pages concurrently. Returns results from all pages.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                tasks: {
+                    type: 'array',
+                    description: 'Array of tasks: {page: <name>, actions: [{tool, args}]}',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            page: { type: 'string', description: 'Named page to execute on' },
+                            actions: { type: 'array', description: 'Actions to execute sequentially on this page' },
+                        },
+                        required: ['page', 'actions'],
+                    },
+                },
+                timeout: { type: 'number', default: 30000, description: 'Max time per task in ms.' },
+            },
+            required: ['tasks'],
+        },
+    },
+
     // ── Request Interception ──────────────────────────────────────────────────
     {
         name: 'browser_intercept',
@@ -584,6 +721,43 @@ const TOOLS = [
         description: 'List all saved session files in the sessions/ directory with name, size, cookie count, origin, and modified time. Read-only.',
         annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
+    },
+
+    // ── Phase 1 Enhancements ─────────────────────────────────────────────────
+    {
+        name: 'browser_wait_for_navigation',
+        description: 'Smart wait after an action: waits for URL to change/contain a pattern, or for a specific selector to appear. Use after clicks that trigger navigation instead of fixed browser_wait.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                urlPattern: { type: 'string', description: 'Wait until URL contains this string. Supports regex: prefix.' },
+                selector: { type: 'string', description: 'Wait for this CSS selector to appear on the page.' },
+                timeout: { type: 'number', default: 15000, description: 'Max wait time in ms.' },
+            },
+        },
+    },
+    {
+        name: 'browser_select_by_index',
+        description: 'Select a radio button or checkbox by its 0-based index within a group. Use for quiz questions or radio groups where text matching is unreliable.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector matching the radio/checkbox group (e.g. "input[name=q5]")' },
+                index: { type: 'number', description: '0-based index of the option to select.' },
+                indices: { type: 'array', items: { type: 'number' }, description: 'For checkboxes: array of 0-based indices to check.' },
+            },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_get_visible_text',
+        description: 'Extract clean text from only visible elements on the page. Skips hidden, display:none, and zero-size elements. Returns structured text without DOM noise.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'Optional CSS selector to scope extraction (default: main content area).' },
+            },
+        },
     },
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -823,23 +997,73 @@ async function handleToolCall(name, args) {
         case 'browser_click': {
             const delay = args.delay || (AGENT_CONFIG.profile === 'stealth' ? Math.floor(Math.random() * 100) + 50 : 0);
             
-            if (AGENT_CONFIG.profile === 'stealth') {
-                // Random small move before click to simulate human jitter
-                const jitterX = (Math.random() - 0.5) * 4;
-                const jitterY = (Math.random() - 0.5) * 4;
-                
-                if (args.selector) {
-                    const box = await page.locator(args.selector).boundingBox();
-                    if (box) await page.mouse.move(box.x + box.width / 2 + jitterX, box.y + box.height / 2 + jitterY, { steps: 5 });
-                } else if (args.x !== undefined && args.y !== undefined) {
-                    await page.mouse.move(args.x + jitterX, args.y + jitterY, { steps: 5 });
+            if (!args.selector && args.x !== undefined && args.y !== undefined) {
+                // Coordinate click — no fallback needed
+                if (AGENT_CONFIG.profile === 'stealth') {
+                    await page.mouse.move(args.x + (Math.random() - 0.5) * 4, args.y + (Math.random() - 0.5) * 4, { steps: 5 });
+                    await page.waitForTimeout(Math.random() * 200 + 100);
                 }
-                await page.waitForTimeout(Math.random() * 200 + 100);
+                await page.mouse.click(args.x, args.y, { delay });
+                return { content: [{ type: 'text', text: `Clicked at (${args.x}, ${args.y}) with ${delay}ms delay.` }] };
             }
 
-            if (args.selector) await page.click(args.selector, { force: true, delay });
-            else await page.mouse.click(args.x, args.y, { delay });
-            return { content: [{ type: 'text', text: `Clicked with ${delay}ms delay.` }] };
+            // Smart retry with fallback selectors
+            const selector = args.selector;
+            const hostname = page.url() ? new URL(page.url()).hostname : 'unknown';
+            const fallbacks = [
+                selector,
+                `${selector}:not([disabled])`,
+                // If selector looks like text content, try role-based
+                ...(selector.includes(':has-text(') ? [] : [
+                    `button:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
+                    `[role="button"]:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
+                    `a:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
+                ]),
+                // If selector is a simple text, try getByRole fallback
+                ...(!selector.includes('.') && !selector.includes('#') && !selector.includes('[') ? [
+                    `text="${selector}"`,
+                    `text=${selector}`,
+                ] : []),
+            ];
+
+            let lastError;
+            for (const fb of fallbacks) {
+                try {
+                    const box = await page.locator(fb).first().boundingBox({ timeout: 2000 });
+                    if (!box) continue;
+
+                    if (AGENT_CONFIG.profile === 'stealth') {
+                        const jitterX = (Math.random() - 0.5) * 4;
+                        const jitterY = (Math.random() - 0.5) * 4;
+                        await page.mouse.move(box.x + box.width / 2 + jitterX, box.y + box.height / 2 + jitterY, { steps: 5 });
+                        await page.waitForTimeout(Math.random() * 200 + 100);
+                    }
+
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay });
+                    const usedFallback = fb !== selector ? ` (fallback: ${fb})` : '';
+                    recorder.record('click', { selector, fallback: fb !== selector ? fb : undefined });
+                    return { content: [{ type: 'text', text: `Clicked "${selector}"${usedFallback} with ${delay}ms delay.` }] };
+                } catch (e) {
+                    lastError = e;
+                }
+            }
+
+            // All fallbacks failed — try coordinate-based as last resort via observe
+            const observed = await observeInteractable(page);
+            const match = observed.elements.find(el => {
+                const t = (el.text || '').toLowerCase();
+                const s = selector.toLowerCase();
+                return t.includes(s) || s.includes(t);
+            });
+
+            if (match) {
+                const cx = match.x + Math.floor(match.w / 2);
+                const cy = match.y + Math.floor(match.h / 2);
+                await page.mouse.click(cx, cy, { delay });
+                return { content: [{ type: 'text', text: `Clicked "${selector}" via element discovery fallback at (${cx}, ${cy}).` }] };
+            }
+
+            return { content: [{ type: 'text', text: `All click strategies failed for "${selector}". Last error: ${lastError?.message}` }], isError: true };
         }
         case 'browser_click_text': {
             const hostname = new URL(page.url()).hostname;
@@ -1333,6 +1557,466 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text }] };
         }
 
+        // ── Phase 3: OCR ─────────────────────────────────────────────────────
+        case 'browser_ocr': {
+            if (!Tesseract) {
+                return { content: [{ type: 'text', text: 'tesseract.js not installed. Run: npm install tesseract.js' }], isError: true };
+            }
+
+            // Take screenshot of element or full page
+            let imageBuffer;
+            if (args.selector) {
+                const el = page.locator(args.selector).first();
+                imageBuffer = await el.screenshot({ type: 'png' });
+            } else {
+                imageBuffer = await page.screenshot({ type: 'png' });
+            }
+
+            // Preprocess image if requested
+            let processedBuffer = imageBuffer;
+            const preprocess = args.preprocess || 'threshold';
+
+            if (preprocess !== 'none') {
+                // Use canvas-based preprocessing in the page context
+                const base64 = imageBuffer.toString('base64');
+                const processed = await page.evaluate(async ({ img, mode }) => {
+                    return new Promise((resolve) => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const imgEl = new Image();
+                        imgEl.onload = () => {
+                            canvas.width = imgEl.width;
+                            canvas.height = imgEl.height;
+                            ctx.drawImage(imgEl, 0, 0);
+
+                            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                            const data = imageData.data;
+
+                            for (let i = 0; i < data.length; i += 4) {
+                                let gray = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+
+                                if (mode === 'threshold') {
+                                    gray = gray > 128 ? 255 : 0;
+                                } else if (mode === 'sharpen') {
+                                    // Simple sharpen: increase contrast
+                                    gray = gray > 128 ? Math.min(255, gray + 30) : Math.max(0, gray - 30);
+                                }
+
+                                data[i] = data[i+1] = data[i+2] = gray;
+                            }
+
+                            ctx.putImageData(imageData, 0, 0);
+                            resolve(canvas.toDataURL('image/png').split(',')[1]);
+                        };
+                        imgEl.src = 'data:image/png;base64,' + img;
+                    });
+                }, { img: base64, mode: preprocess });
+
+                processedBuffer = Buffer.from(processed, 'base64');
+            }
+
+            // Run OCR
+            const lang = args.language || 'eng';
+            const { data: { text, confidence } } = await Tesseract.recognize(processedBuffer, lang, {
+                logger: () => {},
+            });
+
+            const result = {
+                text: text.trim(),
+                confidence: Math.round(confidence),
+                language: lang,
+                preprocessing: preprocess,
+            };
+
+            if (args.returnImage) {
+                result.image = processedBuffer.toString('base64');
+            }
+
+            return { content: [{ type: 'text', text: result.text, data: result }] };
+        }
+
+        // ── Phase 3: Macro Recording ─────────────────────────────────────────
+        case 'browser_record_macro': {
+            const { action, name, format, save } = args;
+
+            if (action === 'start') {
+                recorder.clear();
+                // Monkey-patch tool calls to record them
+                if (!page._macroRecording) {
+                    page._macroRecording = true;
+                    const origHandler = handleToolCall;
+                    page._macroHandler = async (toolName, toolArgs) => {
+                        // Record the action
+                        if (toolName.startsWith('browser_') && toolName !== 'browser_record_macro') {
+                            recorder.record(toolName, toolArgs);
+                        }
+                    };
+                }
+                return { content: [{ type: 'text', text: 'Macro recording started. All browser actions will be captured.' }] };
+            }
+
+            if (action === 'stop') {
+                page._macroRecording = false;
+                const actions = recorder.getActions();
+                const macroName = name || `macro-${Date.now()}`;
+
+                let output;
+                if (format === 'json' || format === 'actions') {
+                    output = JSON.stringify(actions, null, 2);
+                } else {
+                    output = recorder.generate(macroName);
+                }
+
+                if (save) {
+                    const dir = path.join(__dirname, '../../user_data/macros');
+                    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                    const ext = format === 'json' ? 'json' : 'spec.js';
+                    const filePath = path.join(dir, `${macroName}.${ext}`);
+                    fs.writeFileSync(filePath, output);
+                    return { content: [{ type: 'text', text: `Macro saved: ${filePath}\n${actions.length} actions recorded.`, data: { filePath, actionCount: actions.length } }] };
+                }
+
+                return { content: [{ type: 'text', text: `${actions.length} actions recorded.`, data: { actions, script: output } }] };
+            }
+
+            if (action === 'clear') {
+                recorder.clear();
+                return { content: [{ type: 'text', text: 'Macro buffer cleared.' }] };
+            }
+
+            if (action === 'list') {
+                const actions = recorder.getActions();
+                return { content: [{ type: 'text', text: `${actions.length} actions in buffer.`, data: actions }] };
+            }
+
+            if (action === 'export') {
+                const macroName = name || 'macro';
+                const output = recorder.generate(macroName);
+                return { content: [{ type: 'text', text: output || 'No actions recorded.', data: { script: output } }] };
+            }
+        }
+
+        case 'browser_replay_macro': {
+            const { actions, macroName, speed, dryRun } = args;
+            let actionList = actions;
+
+            // Load from file if macroName provided
+            if (macroName && !actionList) {
+                const macroPath = path.join(__dirname, '../../user_data/macros', `${macroName}.json`);
+                if (fs.existsSync(macroPath)) {
+                    actionList = JSON.parse(fs.readFileSync(macroPath, 'utf8'));
+                } else {
+                    return { content: [{ type: 'text', text: `Macro not found: ${macroPath}` }], isError: true };
+                }
+            }
+
+            if (!actionList || !actionList.length) {
+                return { content: [{ type: 'text', text: 'No actions to replay.' }], isError: true };
+            }
+
+            const delay = speed === 'fast' ? 100 : speed === 'slow' ? 1000 : 300;
+            const results = [];
+
+            for (const action of actionList) {
+                if (dryRun) {
+                    results.push({ action: action.type || action.tool, args: action.args, dryRun: true });
+                    continue;
+                }
+
+                try {
+                    const toolName = action.type || action.tool;
+                    const toolArgs = action.args || action.parameters || {};
+
+                    // Skip record_macro calls
+                    if (toolName === 'browser_record_macro') continue;
+
+                    // Execute via the tool handler
+                    const result = await handleToolCall(toolName, toolArgs);
+                    results.push({ action: toolName, success: true });
+                    await page.waitForTimeout(delay);
+                } catch (e) {
+                    results.push({ action: action.type || action.tool, error: e.message });
+                }
+            }
+
+            return { content: [{ type: 'text', text: `Replayed ${results.length} actions (${results.filter(r => r.success).length} succeeded).`, data: results }] };
+        }
+
+        // ── Phase 3: Parallel Execution ──────────────────────────────────────
+        case 'browser_parallel_execute': {
+            const { tasks, timeout } = args;
+            const maxTime = timeout || 30000;
+
+            const executeTask = async (task) => {
+                const { page: pageName, actions } = task;
+                const startTime = Date.now();
+                const taskResults = [];
+
+                // Switch to the named page
+                const switched = await switchToNamedPage(pageName);
+                if (!switched) {
+                    return { page: pageName, error: `Page "${pageName}" not found`, results: [] };
+                }
+
+                const taskPage = getPage();
+
+                for (const action of actions) {
+                    if (Date.now() - startTime > maxTime) {
+                        taskResults.push({ action: action.tool, error: 'Timeout' });
+                        break;
+                    }
+
+                    try {
+                        // Execute action on this page
+                        const result = await handleToolCall(action.tool, action.args || {});
+                        taskResults.push({ action: action.tool, success: true });
+                    } catch (e) {
+                        taskResults.push({ action: action.tool, error: e.message });
+                    }
+                }
+
+                return { page: pageName, results: taskResults };
+            };
+
+            // Execute all tasks concurrently
+            const allResults = await Promise.all(tasks.map(executeTask));
+
+            // Restore to first named page
+            const firstPage = tasks[0]?.page;
+            if (firstPage) await switchToNamedPage(firstPage);
+
+            const summary = allResults.map(r => `${r.page}: ${r.error || r.results.filter(x => x.success).length + '/' + r.results.length + ' ok'}`).join('\n');
+            return { content: [{ type: 'text', text: `Parallel execution complete:\n${summary}`, data: allResults }] };
+        }
+
+        // ── Phase 2: API Capture ─────────────────────────────────────────────
+        case 'browser_intercept_api': {
+            const pattern = args.pattern;
+            const action = args.action || 'start';
+
+            if (action === 'start') {
+                apiCaptureActive = true;
+                apiCapturePattern = pattern;
+                capturedAPIs = [];
+
+                // Set up response listener on the page
+                const responseHandler = async (response) => {
+                    const url = response.url();
+                    // Match pattern (simple glob: ** → .*, * → [^/]*)
+                    const regex = new RegExp('^' + pattern.replace(/\*\*/g, '<<<GLOB>>>').replace(/\*/g, '[^/]*').replace(/<<<GLOB>>>/g, '.*') + '$');
+                    if (!regex.test(url)) return;
+
+                    const contentType = response.headers()['content-type'] || '';
+                    let body = null;
+
+                    try {
+                        if (contentType.includes('json')) {
+                            body = await response.json();
+                        } else if (contentType.includes('text')) {
+                            body = await response.text();
+                        } else {
+                            body = `[binary: ${contentType}]`;
+                        }
+                    } catch (e) {
+                        body = `[error reading body: ${e.message}]`;
+                    }
+
+                    capturedAPIs.push({
+                        url,
+                        status: response.status(),
+                        contentType,
+                        body,
+                        timestamp: Date.now(),
+                    });
+                };
+
+                // Store handler reference for cleanup
+                if (!page._apiHandlers) page._apiHandlers = {};
+                if (page._apiHandlers[pattern]) {
+                    page.removeListener('response', page._apiHandlers[pattern]);
+                }
+                page._apiHandlers[pattern] = responseHandler;
+                page.on('response', responseHandler);
+
+                if (args.reloadPage) {
+                    await page.reload({ waitUntil: 'networkidle' });
+                }
+
+                return { content: [{ type: 'text', text: `API capture started for pattern: ${pattern}. ${args.reloadPage ? 'Page reloaded.' : ''} Listening for responses...` }] };
+            }
+
+            if (action === 'stop') {
+                if (page._apiHandlers && page._apiHandlers[pattern]) {
+                    page.removeListener('response', page._apiHandlers[pattern]);
+                    delete page._apiHandlers[pattern];
+                }
+                apiCaptureActive = false;
+                const count = capturedAPIs.length;
+                return { content: [{ type: 'text', text: `API capture stopped. ${count} responses captured.`, data: capturedAPIs }] };
+            }
+
+            if (action === 'get') {
+                const filtered = args.pattern
+                    ? capturedAPIs.filter(d => d.url.includes(args.pattern))
+                    : capturedAPIs;
+                return { content: [{ type: 'text', text: `${filtered.length} API responses.`, data: filtered }] };
+            }
+        }
+
+        case 'browser_get_captured_apis': {
+            let data = capturedAPIs;
+            if (args.pattern) {
+                data = data.filter(d => d.url.includes(args.pattern));
+            }
+            if (args.clearAfter) {
+                capturedAPIs = [];
+            }
+            return { content: [{ type: 'text', text: `${data.length} API responses.`, data }] };
+        }
+
+        // ── Phase 2: Batch Quiz ──────────────────────────────────────────────
+        case 'browser_batch_answer_quiz': {
+            const { answers, submitAfter, nextSelector, submitSelector } = args;
+            const results = { answered: 0, errors: [], pages: [] };
+
+            const nextBtn = nextSelector || 'button:has-text("Selanjutnya"), button:has-text("Next"), a:has-text("Selanjutnya"), a:has-text("Next")';
+            const submitBtn = submitSelector || 'button:has-text("Selesaikan"), button:has-text("Submit"), button:has-text("Kirim"), button[type="submit"]';
+
+            for (const answer of answers) {
+                try {
+                    const { q, option, options } = answer;
+
+                    // Find inputs on current page
+                    const inputInfo = await page.evaluate(() => {
+                        const groups = {};
+                        const radios = document.querySelectorAll('input[type="radio"]');
+                        const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+
+                        radios.forEach(el => {
+                            const key = `radio:${el.name}`;
+                            if (!groups[key]) groups[key] = { name: el.name, type: 'radio', count: 0, checked: -1 };
+                            groups[key].count++;
+                            if (el.checked) groups[key].checked = groups[key].count - 1;
+                        });
+
+                        checkboxes.forEach(el => {
+                            const key = `checkbox:${el.name}`;
+                            if (!groups[key]) groups[key] = { name: el.name, type: 'checkbox', count: 0, checked: [] };
+                            groups[key].count++;
+                            if (el.checked) groups[key].checked.push(groups[key].count - 1);
+                        });
+
+                        return Object.values(groups);
+                    });
+
+                    if (inputInfo.length === 0) {
+                        results.errors.push({ q, error: 'No radio/checkbox inputs found' });
+                        // Try clicking next anyway
+                        try {
+                            const next = page.locator(nextBtn).first();
+                            if (await next.isVisible({ timeout: 1500 })) {
+                                await next.click();
+                                await page.waitForTimeout(1500);
+                            }
+                        } catch (_) {}
+                        continue;
+                    }
+
+                    // Use first group (single question per page in Dicoding)
+                    const group = inputInfo[0];
+
+                    if (group.type === 'radio' && option !== undefined) {
+                        await page.evaluate(({ name, idx }) => {
+                            const radios = document.querySelectorAll(`input[name="${name}"]`);
+                            if (radios[idx]) {
+                                radios[idx].click();
+                                radios[idx].dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }, { name: group.name, idx: option });
+                        results.answered++;
+                    } else if (group.type === 'checkbox' && options) {
+                        await page.evaluate(({ name, indices }) => {
+                            const boxes = document.querySelectorAll(`input[name="${name}"]`);
+                            indices.forEach(idx => {
+                                if (boxes[idx] && !boxes[idx].checked) {
+                                    boxes[idx].click();
+                                    boxes[idx].dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                            });
+                        }, { name: group.name, indices: options });
+                        results.answered++;
+                    } else {
+                        results.errors.push({ q, error: `Type mismatch: ${group.type}` });
+                        continue;
+                    }
+
+                    // Navigate to next
+                    try {
+                        const next = page.locator(nextBtn).first();
+                        if (await next.isVisible({ timeout: 2000 })) {
+                            await next.click();
+                            await page.waitForTimeout(1500);
+                            results.pages.push(page.url());
+                        }
+                    } catch (_) {}
+
+                } catch (e) {
+                    results.errors.push({ q: answer.q, error: e.message });
+                }
+            }
+
+            if (submitAfter) {
+                try {
+                    const submit = page.locator(submitBtn).first();
+                    if (await submit.isVisible({ timeout: 3000 })) {
+                        await submit.click();
+                        await page.waitForTimeout(2000);
+                        results.submitted = true;
+                    }
+                } catch (e) {
+                    results.errors.push({ q: 'submit', error: e.message });
+                }
+            }
+
+            return { content: [{ type: 'text', text: `Batch answered: ${results.answered}/${answers.length}.`, data: results }] };
+        }
+
+        // ── Phase 2: Tab Awareness ───────────────────────────────────────────
+        case 'browser_switch_to_new_tab': {
+            const ctx = await getPage().context();
+            const timeout = args.timeout || 10000;
+            const urlPattern = args.urlPattern;
+
+            const pagePromise = new Promise((resolve) => {
+                ctx.once('page', resolve);
+                setTimeout(() => {
+                    ctx.removeAllListeners('page');
+                    resolve(null);
+                }, timeout);
+            });
+
+            const newPage = await pagePromise;
+
+            if (!newPage) {
+                return { content: [{ type: 'text', text: `No new tab appeared within ${timeout}ms.` }], isError: true };
+            }
+
+            try {
+                await newPage.waitForLoadState('domcontentloaded', { timeout: 5000 });
+            } catch (_) {}
+
+            const newUrl = newPage.url();
+
+            if (urlPattern && !newUrl.includes(urlPattern)) {
+                return { content: [{ type: 'text', text: `New tab URL "${newUrl}" doesn't match "${urlPattern}".` }], isError: true };
+            }
+
+            const name = `popup-${Date.now()}`;
+            await createNamedPage(name, newPage);
+
+            return { content: [{ type: 'text', text: `New tab: ${newUrl} (registered as "${name}")` }] };
+        }
+
         // Request Interception
         case 'browser_intercept': {
             await addRoute(args.pattern, args.action, {
@@ -1408,6 +2092,179 @@ async function handleToolCall(name, args) {
             }
 
             return { content: [{ type: 'text', text: `Challenge detected but not solvable. Try browser_screenshot to inspect.` }], isError: true };
+        }
+
+        // ── Phase 1 Enhancements ─────────────────────────────────────────────
+        case 'browser_wait_for_navigation': {
+            const startTime = Date.now();
+            const timeout = args.timeout || 15000;
+            const initialUrl = page.url();
+
+            // If no args, just wait for any URL change
+            if (!args.urlPattern && !args.selector) {
+                await page.waitForFunction((prevUrl) => location.href !== prevUrl, initialUrl, { timeout });
+                return { content: [{ type: 'text', text: `URL changed from ${initialUrl} to ${page.url()}` }] };
+            }
+
+            // Wait for URL pattern
+            if (args.urlPattern) {
+                const isRegex = args.urlPattern.startsWith('regex:');
+                const pattern = isRegex ? args.urlPattern.slice(6) : args.urlPattern;
+                try {
+                    await page.waitForFunction(([pat, rx]) => {
+                        const u = location.href;
+                        return rx ? new RegExp(pat).test(u) : u.includes(pat);
+                    }, [pattern, isRegex], { timeout });
+                    return { content: [{ type: 'text', text: `URL now matches "${args.urlPattern}" → ${page.url()}` }] };
+                } catch (e) {
+                    return { content: [{ type: 'text', text: `Timeout waiting for URL pattern "${args.urlPattern}". Current: ${page.url()}` }], isError: true };
+                }
+            }
+
+            // Wait for selector
+            if (args.selector) {
+                try {
+                    await page.waitForSelector(args.selector, { timeout, state: 'visible' });
+                    return { content: [{ type: 'text', text: `Selector "${args.selector}" appeared.` }] };
+                } catch (e) {
+                    return { content: [{ type: 'text', text: `Timeout waiting for selector "${args.selector}".` }], isError: true };
+                }
+            }
+        }
+
+        case 'browser_select_by_index': {
+            const { selector, index, indices } = args;
+
+            // Detect if radio or checkbox
+            const inputType = await page.evaluate((sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return null;
+                return el.type || el.tagName.toLowerCase();
+            }, selector);
+
+            if (!inputType) {
+                return { content: [{ type: 'text', text: `Element not found: ${selector}` }], isError: true };
+            }
+
+            if (inputType === 'radio') {
+                // Get all radios with same name
+                const radioInfo = await page.evaluate((sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    const name = el.name;
+                    const radios = document.querySelectorAll(`input[name="${CSS.escape(name)}"]`);
+                    return { name, count: radios.length };
+                }, selector);
+
+                if (radioInfo && index < radioInfo.count) {
+                    // Click the label for the radio at the given index
+                    await page.evaluate(({ sel, idx }) => {
+                        const el = document.querySelector(sel);
+                        const name = el.name;
+                        const radios = document.querySelectorAll(`input[name="${CSS.escape(name)}"]`);
+                        const target = radios[idx];
+                        if (target) {
+                            target.click();
+                            // Also trigger change event
+                            target.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }, { sel: selector, idx: index });
+                    return { content: [{ type: 'text', text: `Selected radio index ${index} (of ${radioInfo.count}) in group "${radioInfo.name}".` }] };
+                }
+                return { content: [{ type: 'text', text: `Radio index ${index} out of range (group has ${radioInfo?.count || 0} options).` }], isError: true };
+            }
+
+            if (inputType === 'checkbox') {
+                const checkboxInfo = await page.evaluate((sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    const name = el.name || el.closest('fieldset')?.querySelector('input')?.name;
+                    if (name) {
+                        const boxes = document.querySelectorAll(`input[name="${CSS.escape(name)}"]`);
+                        return { name, count: boxes.length };
+                    }
+                    // No name — treat as standalone
+                    const all = document.querySelectorAll('input[type="checkbox"]');
+                    const idx = Array.from(all).indexOf(el);
+                    return { name: '__standalone__', count: all.length, standaloneIndex: idx };
+                }, selector);
+
+                const toCheck = indices || [index];
+                const results = [];
+
+                for (const idx of toCheck) {
+                    try {
+                        await page.evaluate(({ sel, idx }) => {
+                            const el = document.querySelector(sel);
+                            const name = el.name || el.closest('fieldset')?.querySelector('input')?.name;
+                            let target;
+                            if (name) {
+                                const boxes = document.querySelectorAll(`input[name="${CSS.escape(name)}"]`);
+                                target = boxes[idx];
+                            } else {
+                                const all = document.querySelectorAll('input[type="checkbox"]');
+                                const standaloneIdx = Array.from(document.querySelectorAll('input[type="checkbox"]')).indexOf(el);
+                                target = all[standaloneIdx + idx];
+                            }
+                            if (target && !target.checked) {
+                                target.click();
+                                target.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }, { sel: selector, idx });
+                        results.push(idx);
+                    } catch (_) {}
+                }
+
+                return { content: [{ type: 'text', text: `Checked checkbox indices: [${results.join(', ')}].` }] };
+            }
+
+            return { content: [{ type: 'text', text: `Unsupported input type: ${inputType}. Use for radio or checkbox only.` }], isError: true };
+        }
+
+        case 'browser_get_visible_text': {
+            const sel = args.selector || 'body';
+            const text = await page.evaluate((selector) => {
+                const root = document.querySelector(selector) || document.body;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+                const lines = [];
+                let currentBlock = '';
+
+                while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const parent = node.parentElement;
+                    if (!parent) continue;
+
+                    const style = window.getComputedStyle(parent);
+                    const rect = parent.getBoundingClientRect();
+
+                    // Skip hidden elements
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+                    if (rect.width === 0 && rect.height === 0) continue;
+
+                    // Skip script/style
+                    const tag = parent.tagName.toLowerCase();
+                    if (tag === 'script' || tag === 'style' || tag === 'noscript') continue;
+
+                    const text = node.textContent.trim();
+                    if (!text) continue;
+
+                    // Block-level elements get their own line
+                    const display = style.display;
+                    const isBlock = ['block', 'flex', 'grid', 'list-item', 'table', 'table-row'].includes(display);
+
+                    if (isBlock && currentBlock) {
+                        lines.push(currentBlock);
+                        currentBlock = '';
+                    }
+
+                    currentBlock += (currentBlock ? ' ' : '') + text;
+                }
+
+                if (currentBlock) lines.push(currentBlock);
+                return lines.join('\n');
+            }, sel);
+
+            return { content: [{ type: 'text', text: text || '(no visible text found)' }] };
         }
 
         // Helpers

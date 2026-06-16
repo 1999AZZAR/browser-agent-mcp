@@ -6,7 +6,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "playwright": "^1.44.1",
-    "source-map": "^0.7.6"
+    "source-map": "^0.7.6",
+    "tesseract.js": "^7.0.0"
   },
   "scripts": {
     "mcp": "node src/server.js",
