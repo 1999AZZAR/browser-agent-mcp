@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * Macro recording and playback — captures user actions (clicks, types,
+ * navigations) with timestamps and DOM context, then replays them or
+ * exports to Playwright test scripts.
  */
 const path = require('path');
 const fs = require('fs');

@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * Accessibility tree snapshot and element state — captures page AX tree,
+ * prunes to actionable elements only, and assigns stable ref numbers for
+ * reliable re-selection across snapshots.
  */
 const { INTERACTIVE_SELECTOR, MAIN_CONTENT_SELECTORS, CAPTCHA_SELECTORS } = require('../utils/selectors');
 

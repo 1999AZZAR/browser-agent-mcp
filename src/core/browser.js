@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * Browser lifecycle management — handles Playwright Chromium launch, page
+ * creation/switching, navigation, and cleanup. Persists cookies and session
+ * state to disk for cross-session reuse.
  */
 const { chromium } = require('playwright');
 const fs = require('fs');

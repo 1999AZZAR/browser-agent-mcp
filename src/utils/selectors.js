@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * CSS and XPath selectors — defines all selectors used for element detection,
+ * interactive element matching, main content extraction, and CAPTCHA widget
+ * identification.
  */
 /**
  * CSS selectors for interactive elements, main content, and CAPTCHA detection.

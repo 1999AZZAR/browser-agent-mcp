@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * Action selector cache — persists CSS/XPath selectors to disk keyed by
+ * hostname with LRU eviction (500 entries) and 7-day TTL to speed up
+ * repeated interactions on the same site.
  */
 const fs = require('fs');
 const path = require('path');

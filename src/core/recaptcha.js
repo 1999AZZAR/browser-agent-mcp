@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * CAPTCHA detection and solving — detects reCAPTCHA v2 checkboxes, image
+ * grids, and audio challenges. Handles checkbox clicks, grid tile selection,
+ * audio whisper solving, and verification polling.
  */
 const fs = require('fs');
 const path = require('path');

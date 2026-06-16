@@ -2,6 +2,10 @@
  * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
  * Licensed under the MIT License.
  * Contact: azzar.mr.zs@gmail.com for inquiries.
+ *
+ * Tool definitions and request handlers — registers all MCP tools, manages
+ * named browser pages, handles routing/interception, and orchestrates
+ * multi-step workflows like batch quizzes and parallel execution.
  */
 const {
     getPage, closeBrowser, listPages, switchPage, newPage,
