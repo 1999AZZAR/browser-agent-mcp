@@ -3,9 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { SourceMapConsumer } = require('source-map');
 
-// Cache of url → SourceMapConsumer (loaded on demand)
+// Lazy-loaded source map cache — maps URL → SourceMapConsumer for error stack trace mapping.
+// Only loaded when needed to avoid memory overhead.
 const _sourceMapCache = new Map();
 
+// Configuration with sensible defaults — all overridable via environment variables.
+// Using a persistent context (user data dir) instead of incognito for session persistence.
 const CONFIG = {
     userDataDir: path.join(__dirname, '../../user_data'),
     viewport: { width: 1280, height: 720 },
@@ -20,6 +23,8 @@ const CONFIG = {
 
 const STATE_FILE = path.join(CONFIG.userDataDir, 'session_state.json');
 
+// Core state — single browser context, one active page, named pages for parallelism.
+// WeakMaps for per-page logs avoid memory leaks when pages are closed.
 let browserContext = null;
 let activePage = null;
 const activeRoutes = new Map(); // pattern → { action, options }
@@ -29,6 +34,11 @@ const pageConsoleLog = new WeakMap(); // page → Message[]
 const pageNetworkLog = new WeakMap(); // page → Request[]
 const MAX_LOG_ENTRIES = 100;
 
+// Build Chromium launch options with anti-detection flags.
+// Key flags:
+// - --disable-blink-features=AutomationControlled: removes navigator.webdriver flag
+// - --no-sandbox: required for root/CI environments
+// - Stability flags prevent Chrome from throttling background tabs during long sessions
 function buildLaunchOptions() {
     const opts = {
         headless: CONFIG.headless,
@@ -58,6 +68,9 @@ function buildLaunchOptions() {
     return opts;
 }
 
+// Launch browser with exponential backoff retry.
+// Why: Chromium launch can fail transiently (port conflicts, memory pressure).
+// Exponential backoff avoids thundering herd on repeated failures.
 async function launchWithRetry() {
     let lastErr;
     for (let attempt = 0; attempt <= CONFIG.launchRetries; attempt++) {
@@ -81,6 +94,8 @@ async function launchWithRetry() {
     throw new Error(`Browser failed to launch after ${CONFIG.launchRetries + 1} attempt(s): ${lastErr?.message}`);
 }
 
+// Detect transient CDP protocol errors that warrant a retry.
+// These typically occur when Chrome's DevTools protocol connection drops briefly.
 function isRetriableContextError(e) {
     const msg = e?.message || '';
     return msg.includes('Target.createTarget')
@@ -90,6 +105,8 @@ function isRetriableContextError(e) {
         || msg.includes('Target closed');
 }
 
+// Create a new page with retry — handles transient CDP errors.
+// On failure, resets the entire browser context and retries once.
 async function newPageWithRetry() {
     let lastErr;
     for (let attempt = 0; attempt < CONFIG.tabCreateRetries; attempt++) {

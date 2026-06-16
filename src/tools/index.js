@@ -14,15 +14,20 @@ const recorder = require('../core/recorder');
 const fs = require('fs');
 const path = require('path');
 
-// Phase 3: OCR
+// Tesseract.js is optional — OCR tools gracefully degrade if not installed.
+// This keeps the core bundle small while allowing OCR on demand.
 let Tesseract;
 try { Tesseract = require('tesseract.js'); } catch (_) { Tesseract = null; }
 
+// Behavioral profile controls timing and mouse movement patterns.
+// 'stealth' adds human-like jitter and delays to avoid bot detection.
+// 'speed' skips all delays for maximum throughput (CI/testing).
 const AGENT_CONFIG = {
-    profile: 'stealth', // 'stealth' or 'speed'
+    profile: 'stealth',
 };
 
-// Phase 2: API capture state
+// API capture state — persists across tool calls within a session.
+// When active, page.on('response') listeners push matching responses here.
 let capturedAPIs = [];
 let apiCaptureActive = false;
 let apiCapturePattern = null;
@@ -1008,30 +1013,36 @@ async function handleToolCall(name, args) {
             }
 
             // Smart retry with fallback selectors
+            // Why: text= selectors fail with "strict mode violation" when multiple elements match.
+            // Strategy: try the original selector, then relax constraints progressively.
+            // Order: exact → :not([disabled]) → role-based → text variants → element discovery.
             const selector = args.selector;
             const hostname = page.url() ? new URL(page.url()).hostname : 'unknown';
             const fallbacks = [
                 selector,
                 `${selector}:not([disabled])`,
-                // If selector looks like text content, try role-based
+                // If selector already contains :has-text(), don't extract text again
                 ...(selector.includes(':has-text(') ? [] : [
                     `button:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
                     `[role="button"]:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
                     `a:has-text("${selector.replace(/.*has-text\("([^"]+)"\).*/, '$1')}")`,
                 ]),
-                // If selector is a simple text, try getByRole fallback
+                // For plain text strings (no CSS syntax), try Playwright text selectors
                 ...(!selector.includes('.') && !selector.includes('#') && !selector.includes('[') ? [
                     `text="${selector}"`,
                     `text=${selector}`,
                 ] : []),
             ];
 
+            // Try each fallback with a short timeout — first match wins
             let lastError;
             for (const fb of fallbacks) {
                 try {
                     const box = await page.locator(fb).first().boundingBox({ timeout: 2000 });
                     if (!box) continue;
 
+                    // Stealth mode: move mouse to center with jitter, then click
+                    // This mimics human behavior and avoids bot detection heuristics
                     if (AGENT_CONFIG.profile === 'stealth') {
                         const jitterX = (Math.random() - 0.5) * 4;
                         const jitterY = (Math.random() - 0.5) * 4;
@@ -1048,7 +1059,9 @@ async function handleToolCall(name, args) {
                 }
             }
 
-            // All fallbacks failed — try coordinate-based as last resort via observe
+            // Last resort: scan the accessibility tree for any element whose text matches.
+            // This handles cases where the DOM structure is completely different from
+            // what the selector expects (e.g., custom web components, shadow DOM).
             const observed = await observeInteractable(page);
             const match = observed.elements.find(el => {
                 const t = (el.text || '').toLowerCase();
@@ -1088,6 +1101,9 @@ async function handleToolCall(name, args) {
             return { content: [{ type: 'text', text: `Clicked element with text "${args.text}".` }] };
         }
         case 'browser_fill_form': {
+            // Type-aware mode detects each input's HTML type and uses the right Playwright method.
+            // Why: plain page.fill() doesn't work for checkboxes, selects, file inputs, or
+            // contenteditable divs. This auto-detects and dispatches correctly.
             const actions = [];
             for (const [sel, rawVal] of Object.entries(args.data)) {
                 const value = String(rawVal);
@@ -1097,6 +1113,8 @@ async function handleToolCall(name, args) {
                     continue;
                 }
 
+                // Query the element's tag, type attribute, and contenteditable state
+                // from the browser context — we need live DOM info, not just the selector.
                 const meta = await page.evaluate((s) => {
                     const el = document.querySelector(s);
                     if (!el) return null;
@@ -1113,11 +1131,13 @@ async function handleToolCall(name, args) {
                     continue;
                 }
 
+                // Contenteditable elements need keyboard.type(), not fill()
                 if (meta.isContentEditable) {
                     await page.locator(sel).click();
                     await page.keyboard.type(value, { delay: 30 });
                     actions.push('type (contenteditable)');
                 } else if (meta.tag === 'SELECT') {
+                    // Match by value or label text — users often pass human-readable labels
                     const opts = await page.evaluate((s) => {
                         const el = document.querySelector(s);
                         return Array.from(el?.options || []).map(o => ({ value: o.value, label: o.text }));
@@ -1126,23 +1146,28 @@ async function handleToolCall(name, args) {
                     await page.selectOption(sel, match?.value ?? value);
                     actions.push(`select (${match ? 'matched' : 'fallback'})`);
                 } else if (meta.type === 'checkbox' || meta.type === 'radio') {
+                    // Accept truthy strings: "true", "1", "on", "yes", or boolean true
                     const truthy = value === true || value === 'true' || value === '1' || value === 'on' || value === 'yes';
                     if (truthy) await page.check(sel); else await page.uncheck(sel);
                     actions.push(truthy ? 'check' : 'uncheck');
                 } else if (meta.type === 'file') {
+                    // Comma-separated file paths for multi-file inputs
                     const files = value.split(',').map(s => s.trim()).filter(Boolean);
                     await page.setInputFiles(sel, files);
                     actions.push(`setInputFiles (${files.length})`);
                 } else if (meta.type === 'number' || meta.type === 'range') {
+                    // Strip non-numeric characters but keep scientific notation (e.g., "1e5")
                     const num = parseFloat(String(value).replace(/[^0-9.\-eE]/g, ''));
                     await page.fill(sel, isNaN(num) ? value : String(num));
                     actions.push('fill (number)');
                 } else if (meta.type === 'date' || meta.type === 'datetime-local') {
+                    // Convert any date string to ISO format — Playwright requires YYYY-MM-DD
                     const d = new Date(value);
                     const iso = isNaN(d) ? value : d.toISOString().slice(0, meta.type === 'date' ? 10 : 16);
                     await page.fill(sel, iso);
                     actions.push('fill (date)');
                 } else if (meta.type === 'email') {
+                    // Validate email before filling — Playwright throws cryptic errors on invalid values
                     const email = String(value).trim();
                     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
                         throw new Error(`Invalid email value for ${sel}: ${email}`);
@@ -1150,9 +1175,11 @@ async function handleToolCall(name, args) {
                     await page.fill(sel, email);
                     actions.push('fill (email)');
                 } else if (meta.type === 'tel') {
+                    // Strip non-phone characters — allows +, -, spaces, parens
                     await page.fill(sel, String(value).replace(/[^\d+\-\s()]/g, ''));
                     actions.push('fill (tel)');
                 } else if (meta.type === 'url') {
+                    // Auto-prepend https:// if no protocol provided
                     const url = /^https?:\/\//i.test(value) ? value : `https://${value}`;
                     await page.fill(sel, url);
                     actions.push('fill (url)');
@@ -1563,7 +1590,9 @@ async function handleToolCall(name, args) {
                 return { content: [{ type: 'text', text: 'tesseract.js not installed. Run: npm install tesseract.js' }], isError: true };
             }
 
-            // Take screenshot of element or full page
+            // Capture the target region as a PNG buffer.
+            // If selector is provided, screenshot just that element (cleaner OCR).
+            // Otherwise, screenshot the full viewport.
             let imageBuffer;
             if (args.selector) {
                 const el = page.locator(args.selector).first();
@@ -1572,12 +1601,13 @@ async function handleToolCall(name, args) {
                 imageBuffer = await page.screenshot({ type: 'png' });
             }
 
-            // Preprocess image if requested
+            // Image preprocessing significantly improves OCR accuracy.
+            // We run this in the browser context using Canvas API to avoid
+            // adding sharp/canvas npm dependencies.
             let processedBuffer = imageBuffer;
             const preprocess = args.preprocess || 'threshold';
 
             if (preprocess !== 'none') {
-                // Use canvas-based preprocessing in the page context
                 const base64 = imageBuffer.toString('base64');
                 const processed = await page.evaluate(async ({ img, mode }) => {
                     return new Promise((resolve) => {
@@ -1592,13 +1622,15 @@ async function handleToolCall(name, args) {
                             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                             const data = imageData.data;
 
+                            // Convert to grayscale using luminance formula (ITU-R BT.601)
                             for (let i = 0; i < data.length; i += 4) {
                                 let gray = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
 
                                 if (mode === 'threshold') {
+                                    // Binary threshold: pure black/white — best for code screenshots
                                     gray = gray > 128 ? 255 : 0;
                                 } else if (mode === 'sharpen') {
-                                    // Simple sharpen: increase contrast
+                                    // Push mid-tones toward extremes — improves text contrast
                                     gray = gray > 128 ? Math.min(255, gray + 30) : Math.max(0, gray - 30);
                                 }
 
@@ -1615,7 +1647,7 @@ async function handleToolCall(name, args) {
                 processedBuffer = Buffer.from(processed, 'base64');
             }
 
-            // Run OCR
+            // Run Tesseract OCR — suppress logger to avoid noisy output
             const lang = args.language || 'eng';
             const { data: { text, confidence } } = await Tesseract.recognize(processedBuffer, lang, {
                 logger: () => {},
@@ -1636,17 +1668,20 @@ async function handleToolCall(name, args) {
         }
 
         // ── Phase 3: Macro Recording ─────────────────────────────────────────
+        // Macros record browser actions and replay them later.
+        // Recording works by tagging the page — every browser_* call gets logged
+        // to the recorder module. On stop, we export as either a Playwright test
+        // script (for CI) or raw JSON (for replay).
         case 'browser_record_macro': {
             const { action, name, format, save } = args;
 
             if (action === 'start') {
                 recorder.clear();
-                // Monkey-patch tool calls to record them
+                // Tag the page so the handler knows to record actions
                 if (!page._macroRecording) {
                     page._macroRecording = true;
-                    const origHandler = handleToolCall;
                     page._macroHandler = async (toolName, toolArgs) => {
-                        // Record the action
+                        // Record all browser_ calls except record_macro itself
                         if (toolName.startsWith('browser_') && toolName !== 'browser_record_macro') {
                             recorder.record(toolName, toolArgs);
                         }
@@ -1662,8 +1697,10 @@ async function handleToolCall(name, args) {
 
                 let output;
                 if (format === 'json' || format === 'actions') {
+                    // JSON format preserves all action data for replay
                     output = JSON.stringify(actions, null, 2);
                 } else {
+                    // Playwright format generates a runnable test script
                     output = recorder.generate(macroName);
                 }
 
@@ -1790,6 +1827,9 @@ async function handleToolCall(name, args) {
         }
 
         // ── Phase 2: API Capture ─────────────────────────────────────────────
+        // Captures API responses matching a URL pattern without mocking them.
+        // Why: Most modern quiz/SPA platforms load data via XHR/fetch.
+        // Intercepting at the network level is faster and more reliable than DOM scraping.
         case 'browser_intercept_api': {
             const pattern = args.pattern;
             const action = args.action || 'start';
@@ -1799,10 +1839,12 @@ async function handleToolCall(name, args) {
                 apiCapturePattern = pattern;
                 capturedAPIs = [];
 
-                // Set up response listener on the page
+                // Listen for all responses and filter by pattern.
+                // We use page.on('response') instead of page.route() because we want
+                // to capture real responses, not mock them.
                 const responseHandler = async (response) => {
                     const url = response.url();
-                    // Match pattern (simple glob: ** → .*, * → [^/]*)
+                    // Convert glob pattern to regex: ** → .*, * → [^/]*
                     const regex = new RegExp('^' + pattern.replace(/\*\*/g, '<<<GLOB>>>').replace(/\*/g, '[^/]*').replace(/<<<GLOB>>>/g, '.*') + '$');
                     if (!regex.test(url)) return;
 
@@ -1818,6 +1860,7 @@ async function handleToolCall(name, args) {
                             body = `[binary: ${contentType}]`;
                         }
                     } catch (e) {
+                        // Response body may already be consumed or timed out
                         body = `[error reading body: ${e.message}]`;
                     }
 
@@ -1830,7 +1873,7 @@ async function handleToolCall(name, args) {
                     });
                 };
 
-                // Store handler reference for cleanup
+                // Store handler reference for cleanup — prevents listener leaks
                 if (!page._apiHandlers) page._apiHandlers = {};
                 if (page._apiHandlers[pattern]) {
                     page.removeListener('response', page._apiHandlers[pattern]);
@@ -1875,10 +1918,14 @@ async function handleToolCall(name, args) {
         }
 
         // ── Phase 2: Batch Quiz ──────────────────────────────────────────────
+        // Answers multiple quiz questions in one tool call.
+        // Strategy: discover radio/checkbox groups in DOM → click by index → navigate.
+        // This is 10-20x faster than screenshot→analyze→click per question.
         case 'browser_batch_answer_quiz': {
             const { answers, submitAfter, nextSelector, submitSelector } = args;
             const results = { answered: 0, errors: [], pages: [] };
 
+            // Auto-detect navigation buttons — supports Indonesian (Dicoding) and English
             const nextBtn = nextSelector || 'button:has-text("Selanjutnya"), button:has-text("Next"), a:has-text("Selanjutnya"), a:has-text("Next")';
             const submitBtn = submitSelector || 'button:has-text("Selesaikan"), button:has-text("Submit"), button:has-text("Kirim"), button[type="submit"]';
 
@@ -1886,7 +1933,9 @@ async function handleToolCall(name, args) {
                 try {
                     const { q, option, options } = answer;
 
-                    // Find inputs on current page
+                    // Discover all radio/checkbox groups on the current page.
+                    // Groups are identified by their `name` attribute — each question
+                    // typically has its own group name (e.g., "question_5").
                     const inputInfo = await page.evaluate(() => {
                         const groups = {};
                         const radios = document.querySelectorAll('input[type="radio"]');
@@ -1911,7 +1960,7 @@ async function handleToolCall(name, args) {
 
                     if (inputInfo.length === 0) {
                         results.errors.push({ q, error: 'No radio/checkbox inputs found' });
-                        // Try clicking next anyway
+                        // Still try to advance — might be a non-input question page
                         try {
                             const next = page.locator(nextBtn).first();
                             if (await next.isVisible({ timeout: 1500 })) {
@@ -1922,10 +1971,12 @@ async function handleToolCall(name, args) {
                         continue;
                     }
 
-                    // Use first group (single question per page in Dicoding)
+                    // Use first group — Dicoding shows one question per page
                     const group = inputInfo[0];
 
                     if (group.type === 'radio' && option !== undefined) {
+                        // Click radio by index and dispatch change event
+                        // (some frameworks only react to the event, not the click)
                         await page.evaluate(({ name, idx }) => {
                             const radios = document.querySelectorAll(`input[name="${name}"]`);
                             if (radios[idx]) {
@@ -1935,6 +1986,7 @@ async function handleToolCall(name, args) {
                         }, { name: group.name, idx: option });
                         results.answered++;
                     } else if (group.type === 'checkbox' && options) {
+                        // Check multiple checkboxes by index array
                         await page.evaluate(({ name, indices }) => {
                             const boxes = document.querySelectorAll(`input[name="${name}"]`);
                             indices.forEach(idx => {
@@ -1950,7 +2002,7 @@ async function handleToolCall(name, args) {
                         continue;
                     }
 
-                    // Navigate to next
+                    // Navigate to next question — wait for page transition
                     try {
                         const next = page.locator(nextBtn).first();
                         if (await next.isVisible({ timeout: 2000 })) {
