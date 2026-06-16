@@ -618,7 +618,7 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                action: { type: 'string', enum: ['start', 'stop', 'clear', 'list', 'export'], required: true },
+                action: { type: 'string', enum: ['start', 'stop', 'clear', 'list', 'export'] },
                 name: { type: 'string', description: 'Name for the macro (used in export/save).' },
                 format: { type: 'string', enum: ['playwright', 'json', 'actions'], default: 'playwright', description: 'Export format.' },
                 save: { type: 'boolean', default: false, description: 'Save to user_data/macros/ directory.' },
