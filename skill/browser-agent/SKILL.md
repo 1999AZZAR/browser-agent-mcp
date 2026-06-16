@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **64 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **76 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Companion MCPs
 
@@ -36,6 +36,7 @@ This browser agent works best paired with other MCPs for full power:
 | Manage Tabs | `browser_new_tab()`, `browser_list_tabs()`, `browser_switch_tab(index)` | — |
 | Wait (networkidle) | `browser_wait_until_stable()` | `browser_wait(3000)` |
 | Wait (load event) | `browser_wait_for_load(state='load')` | `browser_wait_for_load(state='domcontentloaded')` |
+| Wait (URL/selector after action) | `browser_wait_for_navigation(urlPattern/selector)` | `browser_wait(1500)` |
 | Save session (cookies only) | `browser_save_session(name)` | — |
 | Save session (full auth state) | `browser_save_session(name, includeStorage=true)` | — |
 | Load session | `browser_load_session(name)` | — |
@@ -47,19 +48,22 @@ This browser agent works best paired with other MCPs for full power:
 | List all agents | `browser_agent_list()` | — |
 | Agent Profile | `browser_set_agent_profile(profile='stealth')` | — |
 | Handle CAPTCHA | `browser_handle_captcha()` | auto-switches to DuckDuckGo on Google CAPTCHA |
-| Click element | `browser_click(selector)` | `browser_click(x, y)` |
+| Click element | `browser_click(selector)` | `browser_click(x, y)` — includes smart retry fallbacks |
 | Type text | `browser_type(selector, text, delay=120)` | — |
 | Select dropdown | `browser_select(selector, value)` | `browser_evaluate(script)` |
+| Select radio/checkbox by index | `browser_select_by_index(selector, index)` | `browser_click_ref(ref)` |
 | Check/uncheck | `browser_check(selector)` / `browser_uncheck(selector)` | — |
 | Hover then click | `browser_hover(selector)` → wait → `browser_click(selector)` | — |
 | Scroll to element | `browser_scroll_to(selector)` | `browser_scroll(direction, amount)` |
 | Lazy-load content | `browser_smart_scroll(steps=5)` | — |
 | Extract text | `browser_get_text(selector, all=true, maxLines=200)` | `browser_get_html(selector)` |
+| Extract visible text only | `browser_get_visible_text(selector)` | `browser_get_text(selector)` |
 | Save page as PDF | `browser_print_to_pdf(outputPath)` | `browser_print_to_pdf()` (auto-named) |
 | Run JS in page | `browser_evaluate(script)` | `browser_evaluate(script, args={...})` |
 | Block requests | `browser_intercept(pattern, action='block')` | — |
 | Mock API response | `browser_intercept(pattern, action='mock', body={...})` | — |
 | Inject req headers | `browser_intercept(pattern, action='modify', headers={...})` | — |
+| Capture API responses | `browser_intercept_api(pattern, action='start')` | `browser_get_captured_apis()` |
 | List intercepts | `browser_intercept_list()` | — |
 | Clear intercepts | `browser_clear_intercepts()` | — |
 | Dismiss modal | `browser_dismiss_popups()` | `browser_evaluate("el.remove()")` |
@@ -76,6 +80,12 @@ This browser agent works best paired with other MCPs for full power:
 | Press key | `browser_press(key)` | — |
 | Drag element | `browser_drag(source, target)` | — |
 | Navigate history | `browser_back()` / `browser_forward()` / `browser_reload()` | — |
+| OCR text extraction | `browser_ocr(selector, preprocess='threshold')` | `browser_screenshot()` + manual reading |
+| Record macro | `browser_record_macro(action='start')` | `browser_generate_playwright_test()` |
+| Replay macro | `browser_replay_macro(macroName='...')` | `browser_replay_macro(actions=[...])` |
+| Batch answer quiz | `browser_batch_answer_quiz(answers=[...])` | per-question `browser_select_by_index` + `browser_click` |
+| Switch to new tab | `browser_switch_to_new_tab(urlPattern)` | `browser_list_tabs()` + `browser_switch_tab()` |
+| Parallel page execution | `browser_parallel_execute(tasks=[...])` | sequential `browser_agent_switch` + actions |
 
 ## Wait Strategy Guide
 
@@ -86,6 +96,7 @@ This browser agent works best paired with other MCPs for full power:
 | Page has WebSocket / long-polling | `browser_wait_for_load()` — networkidle will hang |
 | Waiting for a specific element | `browser_wait_for_selector(selector)` |
 | Waiting for URL change | `browser_wait_for_url(pattern)` |
+| After click that navigates | `browser_wait_for_navigation(urlPattern)` or `browser_wait_for_navigation(selector)` |
 
 ## browser_evaluate Notes
 
@@ -250,12 +261,48 @@ browser_generate_playwright_test(testName="checkout_flow", outputPath="/tmp/test
 2. **Default no-screenshot** — `browser_observe()` and `browser_get_state()` (no arg) cost no image tokens. Reserve `screenshot=true` / `browser_screenshot()` for when visual context is genuinely needed.
 3. **Cap diagnostics output** — when calling `browser_console_messages`, `browser_network_requests`, or `browser_get_text(all=true)` on busy pages, pass `maxLines` (e.g. 200) to control token cost.
 4. **Never zero-delay type** — minimum `delay=50`, target `delay=120` for public sites.
-5. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → ref number → `.class` → `x,y` coordinates.
-6. **After navigation** — call `browser_wait_for_selector` before next interaction.
+5. **Selector priority**: `#id` → `[data-testid]` → `[role]`/text → ref number → `.class` → `x,y` coordinates. Smart retry auto-fallbacks on failure.
+6. **After navigation** — call `browser_wait_for_navigation()` or `browser_wait_for_selector` before next interaction.
 7. **On blocked elements** — call `browser_dismiss_popups()` first, then coordinate fallback, then `browser_evaluate`.
 8. **Sites with WebSocket/SSE** — use `browser_wait_for_load()` not `browser_wait_until_stable()` or you will hang.
 9. **On persistent failures** — call `browser_health()`. If `contextAlive=false` or `pageResponsive=false`, the next tool call will auto-recover; otherwise investigate the active URL and recent `browser_console_messages(type='error')`.
 10. **Structured forms** — prefer `browser_fill_form(..., typeAware=true)` over per-field `browser_type` when the form has mixed input types (date/number/email/tel/url/select/checkbox/radio/file/contenteditable).
+11. **Quiz automation** — use `browser_batch_answer_quiz()` for entire exams. Use `browser_select_by_index()` for individual questions. Avoid text-based selection for quiz options.
+12. **API-first extraction** — when available, use `browser_intercept_api()` to capture structured data directly instead of DOM scraping.
+
+## API Capture Workflow
+
+For quiz platforms or any site loading data via XHR/fetch:
+
+```
+1. browser_intercept_api(pattern="**/api/**", action="start", reloadPage=true)
+2. browser_get_captured_apis()           → extract questions as JSON
+3. browser_batch_answer_quiz(answers=[...], submitAfter=true)
+```
+
+No screenshots needed — pure structured data extraction.
+
+## OCR Workflow
+
+For code-based questions or visual text:
+
+```
+1. browser_ocr(selector=".code-block", preprocess="threshold")
+   → returns extracted code text
+2. Analyze the code
+3. browser_select_by_index(selector="input[name=q5]", index=2)
+```
+
+## Macro Recording
+
+Record once, replay with different parameters:
+
+```
+1. browser_record_macro(action="start")
+   ... answer questions manually ...
+2. browser_record_macro(action="stop", save=true, name="quiz-flow")
+3. browser_replay_macro(macroName="quiz-flow")
+```
 
 ## Deep References
 

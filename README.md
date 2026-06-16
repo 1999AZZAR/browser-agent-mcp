@@ -12,11 +12,16 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 - **Crash Recovery**: Browser state is automatically persisted to disk. If the browser process dies, tabs and intercept rules are restored on the next tool call — no data loss.
 - **Parallel Agents**: Run independent named pages within a single browser context. Create, switch, and remove agents to handle multi-page workflows without interference.
 - **PDF Export**: Save pages to disk as PDF with a custom output path and accurate file size reporting.
-- **Smart Wait Strategy**: `browser_wait_for_load` for sites with WebSocket/SSE connections; `browser_wait_until_stable` for AJAX-heavy SPAs.
+- **Smart Wait Strategy**: `browser_wait_for_load` for sites with WebSocket/SSE connections; `browser_wait_until_stable` for AJAX-heavy SPAs; `browser_wait_for_navigation` for post-action URL/selector waits.
 - **Stealth and Evasion**: Anti-detection behavioral profiles (`stealth` vs `speed`), realistic user-agent spoofing, human-like mouse jitter and typing delay.
 - **Robust State Capture**: Extracts semantic page data including Accessibility Trees (AX Tree), interactive elements, and structural headings.
-- **Data Extraction**: Table-to-JSON extraction and high-fidelity PDF/HTML capture.
+- **Data Extraction**: Table-to-JSON extraction, high-fidelity PDF/HTML capture, and visible-only text extraction.
 - **CAPTCHA Management**: Automated detection and assisted resolution for reCAPTCHA, hCaptcha, and common challenge pages.
+- **API Interception & Capture**: Capture XHR/fetch responses as structured JSON — extract quiz data without DOM scraping.
+- **Batch Automation**: Answer entire quizzes in one tool call; batch form filling with index-based selection.
+- **OCR**: Extract text from code screenshots and images via Tesseract.js with preprocessing.
+- **Macro Recording & Replay**: Record workflows once, replay them with different parameters.
+- **Parallel Execution**: Run actions on multiple named pages concurrently.
 
 ## Demo
 
@@ -36,6 +41,7 @@ See the General Browser Agent in action with Gemini CLI: [Watch on YouTube](http
 | `browser_wait` | Wait for a fixed number of milliseconds |
 | `browser_wait_for_selector` | Wait until an element appears in the DOM |
 | `browser_wait_for_url` | Wait until the URL matches a pattern (substring or regex) |
+| `browser_wait_for_navigation` | Smart wait for URL change/selector after an action (replaces fixed waits) |
 | `browser_wait_until_stable` | Wait for networkidle — use for AJAX/SPA pages |
 | `browser_wait_for_load` | Wait for the `load` or `domcontentloaded` event — use for WebSocket/SSE pages |
 
@@ -66,7 +72,7 @@ Named agents are independent pages within the same browser. Use them to parallel
 |------|-------------|
 | `browser_click_text` | Click element by visible text (smart button/link detection) |
 | `browser_fill_form` | Populate multiple fields at once from a `{selector: value}` object |
-| `browser_click` | Click by selector or `x, y` coordinates |
+| `browser_click` | Click by selector or `x, y` coordinates — includes smart retry with fallback selectors |
 | `browser_double_click` / `browser_right_click` | Pointer events |
 | `browser_hover` | Hover over an element or coordinates |
 | `browser_drag` | Drag source element to target |
@@ -81,6 +87,7 @@ Named agents are independent pages within the same browser. Use them to parallel
 | `browser_clear` | Clear an input field |
 | `browser_press` | Press a keyboard key |
 | `browser_select` | Select a dropdown option by value or label |
+| `browser_select_by_index` | Select radio/checkbox by 0-based index (reliable for quiz questions) |
 | `browser_check` / `browser_uncheck` | Checkbox and radio control |
 
 ### Observation & Extraction
@@ -93,6 +100,7 @@ Named agents are independent pages within the same browser. Use them to parallel
 | `browser_state_diff` | Compare last two AX snapshots: URL/title changes, new/removed headings, element shifts, popups, captcha |
 | `browser_screenshot` | Take a screenshot |
 | `browser_get_text` | Read text from one or all matching elements |
+| `browser_get_visible_text` | Extract only visible text (skips hidden, display:none, zero-size elements) |
 | `browser_get_html` | Get full page or element HTML |
 | `browser_extract_table` | Convert an HTML table to structured JSON |
 | `browser_get_cookies` | Get all cookies for the active page |
@@ -115,13 +123,15 @@ script: "return args.x * args.y"
 args: { "x": 6, "y": 7 }
 ```
 
-### Request Interception
+### Request Interception & API Capture
 
 | Tool | Description |
 |------|-------------|
 | `browser_intercept` | Add an intercept rule: `block`, `mock`, or `modify` |
 | `browser_intercept_list` | List all active intercept rules |
 | `browser_clear_intercepts` | Remove all intercept rules |
+| `browser_intercept_api` | Capture API responses matching a URL pattern as structured JSON |
+| `browser_get_captured_apis` | Retrieve all captured API responses with optional filter |
 
 **Actions:**
 - `block` — abort matching requests (ads, trackers, heavy assets)
@@ -154,7 +164,24 @@ Rules persist across page navigations until `browser_clear_intercepts` is called
 | `browser_set_agent_profile` | Switch between `stealth` and `speed` behavioral profiles |
 | `browser_handle_captcha` | Detect and manage CAPTCHA with optional manual hand-off |
 | `browser_solve_captcha_grid` | Click specific grid cells in a visual CAPTCHA |
+| `browser_switch_to_new_tab` | Detect and switch to a newly opened tab/popup |
 | `browser_close` | Terminate the browser session and clear all state |
+
+### Batch Automation
+
+| Tool | Description |
+|------|-------------|
+| `browser_batch_answer_quiz` | Answer all quiz questions in one call — auto-detects radio/checkbox, navigates, optional submit |
+| `browser_fill_form` | Fill multiple form fields at once (see Forms & Input) |
+
+### OCR & Macros
+
+| Tool | Description |
+|------|-------------|
+| `browser_ocr` | Extract text from screenshots/code via Tesseract.js with preprocessing (threshold, grayscale, sharpen) |
+| `browser_record_macro` | Start/stop/clear/export macro recordings as Playwright tests or JSON |
+| `browser_replay_macro` | Replay recorded macros or action arrays with speed control and dry-run |
+| `browser_parallel_execute` | Run actions on multiple named pages concurrently |
 
 **Session storage note:** Pass `includeStorage: true` to `browser_save_session` to also capture `localStorage` and `sessionStorage`. Required for sites that store auth tokens in Web Storage instead of cookies (most modern SPAs). Storage is only restored if the current page origin matches the saved origin.
 
