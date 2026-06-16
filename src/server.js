@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+/*
+ * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
+ * Licensed under the MIT License.
+ * Contact: azzar.mr.zs@gmail.com for inquiries.
+ */
 // MCP Server entry point — exposes browser automation tools via Model Context Protocol.
 // Uses stdio transport for CLI integration (e.g., Claude Code, opencode).
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');

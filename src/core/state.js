@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
+ * Licensed under the MIT License.
+ * Contact: azzar.mr.zs@gmail.com for inquiries.
+ */
 const { INTERACTIVE_SELECTOR, MAIN_CONTENT_SELECTORS, CAPTCHA_SELECTORS } = require('../utils/selectors');
 
 // AX roles that carry actionable or structural meaning.

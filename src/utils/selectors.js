@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
+ * Licensed under the MIT License.
+ * Contact: azzar.mr.zs@gmail.com for inquiries.
+ */
 /**
  * CSS selectors for interactive elements, main content, and CAPTCHA detection.
  * These are shared across captureState, observeInteractable, and CAPTCHA tools.

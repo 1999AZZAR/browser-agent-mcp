@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Azzar Budiyanto / LilyOpenCMS.
+ * Licensed under the MIT License.
+ * Contact: azzar.mr.zs@gmail.com for inquiries.
+ */
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
