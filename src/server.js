@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// MCP Server entry point — exposes browser automation tools via Model Context Protocol.
+// Uses stdio transport for CLI integration (e.g., Claude Code, opencode).
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
@@ -9,10 +11,12 @@ const server = new Server(
     { capabilities: { tools: {} } }
 );
 
+// List all available tools — called once when the MCP client connects
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOLS
 }));
 
+// Route tool calls to the handler — wraps in try/catch for clean error reporting
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {

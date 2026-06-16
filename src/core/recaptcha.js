@@ -5,6 +5,14 @@ const crypto = require('crypto');
 
 const TEMP_DIR = '/tmp';
 
+// reCAPTCHA solver — handles checkbox, image, and audio challenges.
+// Strategy:
+// 1. Click checkbox — sometimes this alone solves it (low-friction sessions)
+// 2. If image challenge appears — extract tile info for agent to solve visually
+// 3. If audio challenge — transcribe via local Whisper model (no API key needed)
+//
+// The solver works within Playwright's cross-origin frame access.
+// reCAPTCHA uses nested iframes: anchor (checkbox) → bframe (challenge).
 class RecaptchaSolver {
   constructor(page) {
     this.page = page;
@@ -20,15 +28,16 @@ class RecaptchaSolver {
     const anchorFrame = await this._getFrame('iframe[title="reCAPTCHA"]');
     if (!anchorFrame) throw new Error('reCAPTCHA iframe not found');
 
-    // Click the checkbox with human-like behavior
+    // Click checkbox with human-like behavior to avoid bot detection
     await anchorFrame.waitForSelector('.rc-anchor-content', { timeout: 7000 });
     await this._humanClick(anchorFrame, '.rc-anchor-content');
     await this.page.waitForTimeout(1500 + Math.random() * 1000);
 
-    // Check if checkbox click solved it
+    // Check if checkbox click solved it — happens in low-risk sessions
     if (await this._isSolved()) return { method: 'click', solved: true };
 
     // Challenge appeared — detect type and return immediately
+    // Agent will handle image challenges via screenshot + visual analysis
     const bframe = await this._getFrame('iframe[src*="bframe"]');
     if (!bframe) throw new Error('Challenge iframe not found');
 
@@ -67,7 +76,7 @@ class RecaptchaSolver {
     console.log('[CAPTCHA] detected type:', challengeType);
     if (challengeType === 'doscaptcha') throw new Error('Bot detected by reCAPTCHA');
 
-    // Switch from image to audio if needed
+    // Switch from image to audio if needed — audio is easier to solve programmatically
     if (challengeType === 'image') {
       console.log('[CAPTCHA] switching to audio...');
       await this._switchToAudio(bframe);
@@ -75,7 +84,7 @@ class RecaptchaSolver {
       console.log('[CAPTCHA] switched to audio');
     }
 
-    // Click PLAY to load the audio source
+    // Click PLAY to load the audio source — required before transcription
     const playBtn = await bframe.waitForSelector('#recaptcha-audio-play-button', { timeout: 5000 }).catch(() => null);
     if (playBtn) {
       console.log('[CAPTCHA] clicking PLAY...');
@@ -102,21 +111,23 @@ class RecaptchaSolver {
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
+  // Detect challenge type by inspecting DOM elements in the bframe.
+  // reCAPTCHA signals its state through specific CSS classes and input presence.
   async _detectChallengeType(bframe) {
     const hasDoscaptcha = await bframe.evaluate(() =>
       document.body.innerText.includes('Try again later')
     ).catch(() => false);
     if (hasDoscaptcha) return 'doscaptcha';
 
-    // Use evaluate to check actual visible state — most reliable for cross-origin frames
+    // Check actual visible state — most reliable for cross-origin frames
     const type = await bframe.evaluate(() => {
-      // Audio challenge: has "Enter what you hear" input or PLAY button text
+      // Audio challenge indicators
       const audioInput = document.querySelector('#audio-response');
       const playBtn = document.querySelector('#recaptcha-audio-play-button');
       const pressPlayText = document.body.innerText.includes('Press PLAY to listen');
       if (audioInput || playBtn || pressPlayText) return 'audio';
 
-      // Image challenge: has tile wrapper or challenge container
+      // Image challenge indicators
       const imgTiles = document.querySelector('.rc-image-tile-wrapper');
       const imgChallenge = document.querySelector('.rc-imageselect-challenge');
       if (imgTiles || imgChallenge) return 'image';
@@ -127,6 +138,7 @@ class RecaptchaSolver {
     return type;
   }
 
+  // Extract image challenge metadata for agent visual solving
   async _getImageChallengeInfo(bframe) {
     const prompt = await bframe.evaluate(() => {
       const el = document.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-desc, .rc-imageselect-instructions');
@@ -150,6 +162,8 @@ class RecaptchaSolver {
     };
   }
 
+  // Simulate human-like click: move to element center with jitter, pause, then click.
+  // Why: reCAPTCHA monitors mouse trajectory for bot detection.
   async _humanClick(frame, selector) {
     const el = await frame.$(selector);
     if (!el) { await frame.click(selector, { delay: 80 + Math.random() * 120 }); return; }
@@ -162,12 +176,14 @@ class RecaptchaSolver {
     await this.page.mouse.click(cx, cy, { delay: 60 + Math.random() * 100 });
   }
 
+  // Get a cross-origin frame by selector — reCAPTCHA uses nested iframes
   async _getFrame(selector) {
     const el = await this.page.waitForSelector(selector, { timeout: 7000 }).catch(() => null);
     if (!el) return null;
     return await el.contentFrame();
   }
 
+  // Check if reCAPTCHA checkbox is checked — aria-checked="true" means solved
   async _isSolved() {
     const el = await this.page.$('iframe[title="reCAPTCHA"]');
     if (!el) return false;
@@ -182,6 +198,7 @@ class RecaptchaSolver {
     } catch { return false; }
   }
 
+  // Detect if reCAPTCHA has blocked us — "Try again later" means bot detected
   async _isDetected() {
     try {
       const bframe = await this._getFrame('iframe[src*="bframe"]');
@@ -190,6 +207,7 @@ class RecaptchaSolver {
     } catch { return false; }
   }
 
+  // Switch from image to audio challenge — audio is easier to solve programmatically
   async _switchToAudio(bframe) {
     const btn = await bframe.waitForSelector('#recaptcha-audio-button', { timeout: 5000 }).catch(() => null);
     if (!btn) throw new Error('Audio challenge button not found');
@@ -197,6 +215,7 @@ class RecaptchaSolver {
     await this.page.waitForTimeout(2000);
   }
 
+  // Extract audio source URL from the challenge iframe
   async _getAudioUrl() {
     const bframe = await this._getFrame('iframe[src*="bframe"]');
     if (!bframe) { console.log('[CAPTCHA] _getAudioUrl: no bframe'); return null; }
@@ -205,7 +224,7 @@ class RecaptchaSolver {
     ).catch(() => false);
     if (blocked) throw new Error('Bot detected after audio switch');
 
-    // Try multiple selectors for audio source
+    // Try multiple selectors — reCAPTCHA DOM structure varies across versions
     const src = await bframe.waitForSelector('#audio-source', { timeout: 7000 }).catch(() => null);
     if (src) {
       const url = await src.getAttribute('src');
@@ -228,6 +247,7 @@ class RecaptchaSolver {
   /**
    * Transcribe audio using local whisper via @xenova/transformers (no API key).
    * Downloads the model on first use (~100MB for tiny model).
+   * Converts MP3→WAV (16kHz mono) for whisper compatibility.
    */
   async _transcribeAudio(audioUrl) {
     const tmpId = crypto.randomInt(10000, 99999);
@@ -238,22 +258,26 @@ class RecaptchaSolver {
       const resp = await fetch(audioUrl);
       if (!resp.ok) throw new Error(`Audio download failed: ${resp.status}`);
       fs.writeFileSync(mp3, Buffer.from(await resp.arrayBuffer()));
+      // Convert to 16kHz mono WAV — whisper requires this format
       execSync(`ffmpeg -y -i "${mp3}" -ar 16000 -ac 1 "${wav}" 2>/dev/null`, { stdio: 'pipe' });
 
       const { pipeline } = require('@xenova/transformers');
       const transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
       const audioBuffer = fs.readFileSync(wav);
+      // Convert int16 PCM to float32 normalized [-1, 1] — whisper input format
       const int16 = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.byteLength / 2);
       const float32 = Float32Array.from(int16, s => s / 32768);
       const result = await transcriber(float32, { sampling_rate: 16000 });
       return result.text.trim();
     } finally {
+      // Clean up temp files — always, even on error
       for (const p of [mp3, wav]) {
         try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
       }
     }
   }
 
+  // Submit the transcribed text and click verify
   async _submitAnswer(text) {
     const bframe = await this._getFrame('iframe[src*="bframe"]');
     if (!bframe) throw new Error('Challenge iframe lost');
