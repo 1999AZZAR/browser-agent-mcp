@@ -86,6 +86,18 @@ This browser agent works best paired with other MCPs for full power:
 | Batch answer quiz | `browser_batch_answer_quiz(answers=[...])` | per-question `browser_select_by_index` + `browser_click` |
 | Switch to new tab | `browser_switch_to_new_tab(urlPattern)` | `browser_list_tabs()` + `browser_switch_tab()` |
 | Parallel page execution | `browser_parallel_execute(tasks=[...])` | sequential `browser_agent_switch` + actions |
+| Assert element visible | `browser_assert_visible(selector)` | `browser_get_state()` + check elements |
+| Assert element text | `browser_assert_text(selector, expected)` | `browser_get_text(selector)` + check content |
+| Assert URL contains | `browser_assert_url(pattern)` | check `page.url()` manually |
+| Read page as markdown | `browser_get_page_markdown(selector?)` | `browser_get_text(selector)` |
+| Get accessibility tree | `browser_get_accessibility_tree(selector?)` | `browser_get_state()` |
+| Mock network response | `browser_mock_network(pattern, body)` | `browser_intercept(pattern, action='mock')` |
+| Clear all mocks | `browser_clear_mocks()` | `browser_clear_intercepts()` |
+| Handle JS dialog | `browser_dialog(action='accept')` | manual `page.on('dialog')` |
+| Upload file | `browser_upload(selector, filePath)` | `browser_fill_form(typeAware=true)` for file inputs |
+| Click Nth match | `browser_click_nth(selector, index)` | `browser_click(selector)` with specific selector |
+| Highlight element | `browser_highlight(selector, color?)` | `browser_screenshot()` without highlight |
+| Wait for content change | `browser_wait_for_change(selector)` | `browser_wait(ms)` + poll |
 
 ## Wait Strategy Guide
 
@@ -269,6 +281,12 @@ browser_generate_playwright_test(testName="checkout_flow", outputPath="/tmp/test
 10. **Structured forms** — prefer `browser_fill_form(..., typeAware=true)` over per-field `browser_type` when the form has mixed input types (date/number/email/tel/url/select/checkbox/radio/file/contenteditable).
 11. **Quiz automation** — use `browser_batch_answer_quiz()` for entire exams. Use `browser_select_by_index()` for individual questions. Avoid text-based selection for quiz options.
 12. **API-first extraction** — when available, use `browser_intercept_api()` to capture structured data directly instead of DOM scraping.
+13. **Assert after actions** — use `browser_assert_visible`, `browser_assert_text`, or `browser_assert_url` after actions with verifiable outcomes. Assertions never throw — they return PASS/FAIL.
+14. **Read content as markdown** — prefer `browser_get_page_markdown()` over `browser_get_text()` for comprehension tasks. It returns structured headings, lists, and tables.
+15. **Mock for testing** — use `browser_mock_network()` to isolate frontend from backend. Always `browser_clear_mocks()` when done.
+16. **Dialog before trigger** — call `browser_dialog()` BEFORE the action that opens the dialog. Handler persists for one dialog only.
+17. **Click nth for lists** — use `browser_click_nth(selector, index)` when `browser_click()` throws "strict mode violation" due to multiple matches.
+18. **Wait for change** — use `browser_wait_for_change(selector)` after SPA actions that update content in-place, instead of arbitrary `browser_wait()`.
 
 ## API Capture Workflow
 
@@ -311,3 +329,151 @@ Load these only when needed:
 - **[patterns.md](references/patterns.md)** — search, form, extraction, and troubleshooting flows.
 - **[selectors.md](references/selectors.md)** — AX tree usage, dynamic content, coordinate fallbacks.
 - **[stealth.md](references/stealth.md)** — anti-detection, human-like timing, behavioral red flags.
+
+## Assertion Workflow
+
+Assertions verify outcomes without breaking flow. They return `[PASS]` or `[FAIL]` — never throw.
+
+```
+browser_click_text("Submit")
+→ browser_assert_visible("[role='alert']")
+  ✓ [PASS] → continue
+  ✗ [FAIL] → re-plan based on what's actually on the page
+```
+
+### Types:
+- `browser_assert_visible(selector)` — element exists and is visible
+- `browser_assert_text(selector, expected)` — element contains substring
+- `browser_assert_url(pattern)` — URL contains pattern
+
+### Use after every action with a verifiable outcome:
+```
+browser_fill_form({"#email": "test@example.com"}, submit=true)
+→ browser_assert_url("/dashboard")
+→ browser_assert_text(".welcome", "Hello")
+```
+
+## Perception Tools
+
+Read page content as structured data instead of raw DOM.
+
+| Tool | Returns | Best For |
+|------|---------|----------|
+| `browser_get_page_markdown(selector?)` | Markdown with headings, lists, tables, links | Reading article content, product info |
+| `browser_get_accessibility_tree(selector?)` | YAML-like roles/names/states | Understanding component structure |
+
+### When to use:
+- Reading page content for comprehension → `browser_get_page_markdown()`
+- Understanding what elements are available → `browser_get_accessibility_tree()`
+- Scoping to a section → pass CSS selector
+
+### Example:
+```js
+browser_get_page_markdown("article.post")
+// Returns:
+// # Title of Article
+// ## Section 1
+// - List item 1
+// - List item 2
+// [Read more](https://...)
+```
+
+## Network Mocking
+
+Mock API responses for frontend testing without touching the backend.
+
+```
+// Mock a specific API endpoint
+browser_mock_network("**/api/users*", { users: [{id: 1, name: "Test"}] })
+
+// Frontend now receives mocked data
+browser_navigate("http://localhost:3000/users")
+→ page shows mocked users list
+
+// Restore normal behavior
+browser_clear_mocks()
+```
+
+### Use cases:
+- Test error handling: mock 500 responses
+- Test empty states: mock empty arrays
+- Test loading states: add delays to mocked responses
+- Isolate frontend from backend during testing
+
+## Dialog Handling
+
+Set up handlers for `alert()`, `confirm()`, and `prompt()` dialogs.
+
+```
+// MUST call before the action that triggers the dialog
+browser_dialog(action="accept", promptText="Hello")
+browser_click("#show-alert")
+// dialog is auto-accepted
+
+browser_dialog(action="dismiss")
+browser_click("#confirm-delete")
+// dialog is auto-dismissed (clicks Cancel)
+```
+
+### Important:
+- Call `browser_dialog` BEFORE the action that triggers it
+- Handler persists for one dialog, then resets
+- For `prompt()`, provide `promptText` parameter
+
+## File Upload
+
+Upload files to `<input type="file">` elements.
+
+```
+browser_upload("#avatar", "/path/to/photo.jpg")
+browser_upload("#documents", "/file1.pdf, /file2.pdf")  // multiple files
+```
+
+### Notes:
+- Path must be absolute
+- Comma-separated for multiple files
+- Input must have `type="file"` attribute
+
+## Click Nth Match
+
+Click the Nth element when multiple elements match a selector.
+
+```
+browser_click_nth(".product-card", 0)   // first product
+browser_click_nth(".product-card", 2)   // third product
+browser_click_nth("button", -1)         // last button
+```
+
+### Use when:
+- `browser_click(selector)` throws "strict mode violation"
+- You need a specific item from a list
+- Elements don't have unique IDs
+
+## Visual Debugging
+
+Highlight elements before screenshots to verify location.
+
+```
+browser_highlight("#submit-btn", color="red", durationMs=3000)
+browser_screenshot()  // screenshot shows highlighted element
+```
+
+### Use for:
+- Verifying selector matches the right element
+- Debugging layout issues
+- Documenting element locations
+
+## Wait for Change
+
+Wait for SPA content to update after an action.
+
+```
+browser_click("#calculate")
+browser_wait_for_change("#results", timeout=5000)
+browser_get_text("#results")  // now contains updated data
+```
+
+### When to use:
+- After clicking buttons that update content
+- After form submissions that update a section
+- When content loads asynchronously (not full page navigation)

@@ -22,11 +22,15 @@ const cache = require('../core/cache');
 const recorder = require('../core/recorder');
 const fs = require('fs');
 const path = require('path');
+const { validateURL } = require('../utils/url-validator');
 
 // Tesseract.js is optional — OCR tools gracefully degrade if not installed.
 // This keeps the core bundle small while allowing OCR on demand.
 let Tesseract;
 try { Tesseract = require('tesseract.js'); } catch (_) { Tesseract = null; }
+
+// SSRF protection flag — set via environment or tool
+let allowPrivateIPs = process.env.ALLOW_PRIVATE_IPS === 'true';
 
 // Behavioral profile controls timing and mouse movement patterns.
 // 'stealth' adds human-like jitter and delays to avoid bot detection.
@@ -912,6 +916,161 @@ const TOOLS = [
         annotations: { readOnlyHint: true },
         inputSchema: { type: 'object', properties: {} },
     },
+
+    // ── Assertions (never throw — return PASS/FAIL) ──────────────────────────
+    {
+        name: 'browser_assert_visible',
+        description: 'Check if an element is visible on the page. Returns [PASS]/[FAIL] — never throws. Use for verification without breaking flow.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector to check' },
+            },
+            required: ['selector'],
+        },
+    },
+    {
+        name: 'browser_assert_text',
+        description: 'Check if an element contains expected text (substring match). Returns [PASS]/[FAIL] with context — never throws.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector' },
+                expected: { type: 'string', description: 'Expected text substring' },
+            },
+            required: ['selector', 'expected'],
+        },
+    },
+    {
+        name: 'browser_assert_url',
+        description: 'Check if current URL contains a pattern. Returns [PASS]/[FAIL] — never throws.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'Substring to match in URL' },
+            },
+            required: ['pattern'],
+        },
+    },
+
+    // ── Perception (read page content as structured data) ────────────────────
+    {
+        name: 'browser_get_page_markdown',
+        description: 'Extract page content as structured markdown (headings, lists, tables, links). Better than raw text for reading comprehension.',
+        annotations: { readOnlyHint: true },
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'Optional CSS selector to scope extraction (default: main content area).' },
+                maxLength: { type: 'number', description: 'Max output length in chars. Default 5000.' },
+            },
+        },
+    },
+    {
+        name: 'browser_get_accessibility_tree',
+        description: 'Get the accessibility tree as structured text — roles, names, states. Useful for understanding page structure without screenshots.',
+        annotations: { readOnlyHint: true },
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'Optional CSS selector to scope extraction.' },
+                maxLength: { type: 'number', description: 'Max output length in chars. Default 5000.' },
+            },
+        },
+    },
+
+    // ── Network Mocking ──────────────────────────────────────────────────────
+    {
+        name: 'browser_mock_network',
+        description: 'Mock API responses for frontend testing. Intercepts matching URLs and returns synthetic data without touching the backend.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pattern: { type: 'string', description: 'URL glob pattern to match (e.g. "**/api/users*")' },
+                body: { description: 'Response body (string or JSON object)' },
+                status: { type: 'number', default: 200, description: 'HTTP status code' },
+                contentType: { type: 'string', default: 'application/json', description: 'Content-Type header' },
+            },
+            required: ['pattern', 'body'],
+        },
+    },
+    {
+        name: 'browser_clear_mocks',
+        description: 'Remove all network mock routes and restore normal behavior.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+
+    // ── Dialog Handling ──────────────────────────────────────────────────────
+    {
+        name: 'browser_dialog',
+        description: 'Set up handler for JavaScript dialogs (alert, confirm, prompt). Call BEFORE the action that triggers the dialog.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                action: { type: 'string', enum: ['accept', 'dismiss'], description: 'How to handle the dialog' },
+                promptText: { type: 'string', description: 'Text to enter for window.prompt() dialogs' },
+            },
+            required: ['action'],
+        },
+    },
+
+    // ── File Upload ──────────────────────────────────────────────────────────
+    {
+        name: 'browser_upload',
+        description: 'Upload a file to an <input type="file"> element. Provide absolute file path(s).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector for file input' },
+                filePath: { type: 'string', description: 'Absolute path to file. Comma-separated for multiple files.' },
+            },
+            required: ['selector', 'filePath'],
+        },
+    },
+
+    // ── Click Nth ────────────────────────────────────────────────────────────
+    {
+        name: 'browser_click_nth',
+        description: 'Click the Nth element matching a selector (0-based). Avoids "strict mode violation" when multiple elements match.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector matching multiple elements' },
+                index: { type: 'number', description: '0-based index of which match to click' },
+            },
+            required: ['selector', 'index'],
+        },
+    },
+
+    // ── Visual Debug ─────────────────────────────────────────────────────────
+    {
+        name: 'browser_highlight',
+        description: 'Draw a colored border around an element for visual debugging. Useful before taking screenshots to verify element location.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector to highlight' },
+                color: { type: 'string', default: 'red', description: 'Border color' },
+                durationMs: { type: 'number', default: 3000, description: 'How long to show the highlight (ms)' },
+            },
+            required: ['selector'],
+        },
+    },
+
+    // ── Wait for Change ──────────────────────────────────────────────────────
+    {
+        name: 'browser_wait_for_change',
+        description: 'Wait for an element text or attribute to change. Essential for SPAs where content updates after actions.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                selector: { type: 'string', description: 'CSS selector to watch' },
+                attribute: { type: 'string', description: 'Attribute to watch (default: textContent)' },
+                timeout: { type: 'number', default: 10000, description: 'Max wait in ms' },
+            },
+            required: ['selector'],
+        },
+    },
 ];
 
 async function handleToolCall(name, args) {
@@ -920,6 +1079,13 @@ async function handleToolCall(name, args) {
     switch (name) {
         // Navigation
         case 'browser_navigate': {
+            // SSRF protection — validate URL before navigation
+            try {
+                validateURL(args.url, { allowPrivate: allowPrivateIPs });
+            } catch (e) {
+                return { content: [{ type: 'text', text: `URL blocked: ${e.message}` }], isError: true };
+            }
+
             const retries = args.retries ?? 2;
             const retryDelay = args.retryDelay ?? 1000;
             let lastError;
@@ -2567,6 +2733,261 @@ async function handleToolCall(name, args) {
         case 'browser_health': {
             const health = await healthCheck();
             return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
+        }
+
+        // ── New Tools: Assertions ────────────────────────────────────────────────
+        case 'browser_assert_visible': {
+            try {
+                const visible = await page.locator(args.selector).first().isVisible({ timeout: 5000 });
+                if (visible) {
+                    return { content: [{ type: 'text', text: `[PASS] ${args.selector} is visible` }] };
+                }
+                return { content: [{ type: 'text', text: `[FAIL] ${args.selector} is not visible` }] };
+            } catch (e) {
+                return { content: [{ type: 'text', text: `[FAIL] ${args.selector} — ${e.message}` }] };
+            }
+        }
+        case 'browser_assert_text': {
+            try {
+                const element = page.locator(args.selector).first();
+                const content = await element.textContent({ timeout: 5000 }) || '';
+                if (content.includes(args.expected)) {
+                    const idx = content.indexOf(args.expected);
+                    const start = Math.max(0, idx - 50);
+                    const end = Math.min(content.length, idx + args.expected.length + 50);
+                    const ctx = (start > 0 ? '...' : '') + content.substring(start, end) + (end < content.length ? '...' : '');
+                    return { content: [{ type: 'text', text: `[PASS] Found "${args.expected}" in ${args.selector}`, data: { found: true, context: ctx } }] };
+                }
+                return { content: [{ type: 'text', text: `[FAIL] "${args.expected}" not found in ${args.selector} (${content.length} chars)`, data: { found: false, text: content.substring(0, 300) } }] };
+            } catch (e) {
+                return { content: [{ type: 'text', text: `[FAIL] ${args.selector} — ${e.message}` }] };
+            }
+        }
+        case 'browser_assert_url': {
+            const currentUrl = page.url();
+            if (currentUrl.includes(args.pattern)) {
+                return { content: [{ type: 'text', text: `[PASS] URL contains "${args.pattern}"`, data: { match: true, url: currentUrl } }] };
+            }
+            return { content: [{ type: 'text', text: `[FAIL] URL does not contain "${args.pattern}"`, data: { match: false, url: currentUrl } }] };
+        }
+
+        // ── New Tools: Perception ───────────────────────────────────────────────
+        case 'browser_get_page_markdown': {
+            const sel = args.selector || 'main, article, [role="main"], .content, body';
+            const maxLen = args.maxLength || 5000;
+            const markdown = await page.evaluate(({ selector, max }) => {
+                const root = document.querySelector(selector) || document.body;
+                const lines = [];
+                let charCount = 0;
+
+                function processNode(node) {
+                    if (charCount >= max) return;
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        const text = node.textContent.trim();
+                        if (text) { lines.push(text); charCount += text.length; }
+                        return;
+                    }
+                    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+                    const tag = node.tagName.toLowerCase();
+                    const style = window.getComputedStyle(node);
+                    if (style.display === 'none' || style.visibility === 'hidden') return;
+                    if (['script', 'style', 'noscript'].includes(tag)) return;
+
+                    if (['h1','h2','h3','h4','h5','h6'].includes(tag)) {
+                        const level = parseInt(tag[1]);
+                        lines.push('\n' + '#'.repeat(level) + ' ' + node.textContent.trim());
+                        charCount += level + 1 + node.textContent.length;
+                    } else if (tag === 'p') {
+                        lines.push('\n' + node.textContent.trim());
+                        charCount += node.textContent.length;
+                    } else if (tag === 'li') {
+                        lines.push('- ' + node.textContent.trim());
+                        charCount += node.textContent.length + 2;
+                    } else if (tag === 'a' && node.href) {
+                        const text = node.textContent.trim();
+                        if (text) { lines.push('[' + text + '](' + node.href + ')'); charCount += text.length + node.href.length; }
+                    } else if (tag === 'img' && node.alt) {
+                        lines.push('![' + node.alt + '](' + node.src + ')');
+                        charCount += node.alt.length + node.src.length;
+                    } else if (tag === 'table') {
+                        const rows = Array.from(node.querySelectorAll('tr'));
+                        rows.forEach((row, i) => {
+                            const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.textContent.trim());
+                            lines.push('| ' + cells.join(' | ') + ' |');
+                            if (i === 0) lines.push('| ' + cells.map(() => '---').join(' | ') + ' |');
+                        });
+                    } else {
+                        for (const child of node.childNodes) processNode(child);
+                        return;
+                    }
+                    if (!['table','h1','h2','h3','h4','h5','h6','p','li'].includes(tag)) {
+                        for (const child of node.childNodes) processNode(child);
+                    }
+                }
+
+                processNode(root);
+                return lines.join('\n').substring(0, max);
+            }, { selector: sel, max: maxLen });
+
+            return { content: [{ type: 'text', text: markdown || '(no content found)' }] };
+        }
+        case 'browser_get_accessibility_tree': {
+            const sel = args.selector;
+            const maxLen = args.maxLength || 5000;
+            const tree = await page.evaluate(({ selector, max }) => {
+                const root = selector ? document.querySelector(selector) : document.body;
+                if (!root) return '(element not found)';
+
+                const lines = [];
+                let charCount = 0;
+
+                function walk(el, depth) {
+                    if (charCount >= max) return;
+                    const role = el.getAttribute('role') || '';
+                    const name = el.getAttribute('aria-label') || '';
+                    const state = [];
+                    if (el.getAttribute('aria-hidden') === 'true') state.push('hidden');
+                    if (el.getAttribute('aria-disabled') === 'true') state.push('disabled');
+                    if (el.getAttribute('aria-expanded')) state.push('expanded=' + el.getAttribute('aria-expanded'));
+                    if (el.getAttribute('aria-checked')) state.push('checked=' + el.getAttribute('aria-checked'));
+                    if (el.getAttribute('aria-selected')) state.push('selected=' + el.getAttribute('aria-selected'));
+                    if (el.getAttribute('aria-current')) state.push('current=' + el.getAttribute('aria-current'));
+                    if (el.tagName === 'INPUT') state.push('type=' + el.type);
+                    if (el.tagName === 'A' && el.href) state.push('href=' + el.href.substring(0, 80));
+
+                    const tag = el.tagName.toLowerCase();
+                    const indent = '  '.repeat(depth);
+                    const stateStr = state.length ? ' [' + state.join(', ') + ']' : '';
+                    const nameStr = name ? ' "' + name + '"' : '';
+                    const text = el.childNodes.length === 1 && el.childNodes[0].nodeType === 3
+                        ? ' "' + el.textContent.trim().substring(0, 50) + '"' : '';
+
+                    lines.push(indent + tag + (role ? ' role=' + role : '') + (nameStr || text) + stateStr);
+                    charCount += lines[lines.length - 1].length;
+
+                    for (const child of el.children) walk(child, depth + 1);
+                }
+
+                walk(root, 0);
+                return lines.join('\n').substring(0, max);
+            }, { selector: sel, max: maxLen });
+
+            return { content: [{ type: 'text', text: tree || '(no tree found)' }] };
+        }
+
+        // ── New Tools: Network Mocking ──────────────────────────────────────────
+        case 'browser_mock_network': {
+            const mockPattern = args.pattern;
+            const body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body);
+            const status = args.status || 200;
+            const contentType = args.contentType || 'application/json';
+
+            await page.route(mockPattern, route => {
+                return route.fulfill({ status, contentType, body });
+            });
+
+            return { content: [{ type: 'text', text: 'Network mock active: ' + mockPattern + ' → ' + status }] };
+        }
+        case 'browser_clear_mocks': {
+            await page.unrouteAll();
+            return { content: [{ type: 'text', text: 'All network mocks cleared.' }] };
+        }
+
+        // ── New Tools: Dialog Handling ──────────────────────────────────────────
+        case 'browser_dialog': {
+            const dialogAction = args.action;
+            const promptText = args.promptText || '';
+
+            page.once('dialog', async (dialog) => {
+                try {
+                    if (dialogAction === 'accept') {
+                        await dialog.accept(promptText);
+                    } else {
+                        await dialog.dismiss();
+                    }
+                } catch (_) {}
+            });
+
+            return { content: [{ type: 'text', text: 'Dialog handler set to "' + dialogAction + '"' + (promptText ? ' with prompt text' : '') + '.' }] };
+        }
+
+        // ── New Tools: File Upload ──────────────────────────────────────────────
+        case 'browser_upload': {
+            const files = args.filePath.split(',').map(f => f.trim()).filter(Boolean);
+            await page.setInputFiles(args.selector, files);
+            return { content: [{ type: 'text', text: 'Uploaded ' + files.length + ' file(s) to ' + args.selector + '.' }] };
+        }
+
+        // ── New Tools: Click Nth ────────────────────────────────────────────────
+        case 'browser_click_nth': {
+            const locator = page.locator(args.selector);
+            const count = await locator.count();
+            if (args.index < 0 || args.index >= count) {
+                return { content: [{ type: 'text', text: 'Index ' + args.index + ' out of range (found ' + count + ' matches).' }], isError: true };
+            }
+            if (AGENT_CONFIG.profile === 'stealth') {
+                const box = await locator.nth(args.index).boundingBox({ timeout: 5000 });
+                if (box) {
+                    const jitterX = (Math.random() - 0.5) * 4;
+                    const jitterY = (Math.random() - 0.5) * 4;
+                    await page.mouse.move(box.x + box.width / 2 + jitterX, box.y + box.height / 2 + jitterY, { steps: 5 });
+                    await page.waitForTimeout(Math.random() * 150 + 80);
+                }
+            }
+            await locator.nth(args.index).click({ timeout: 5000 });
+            recorder.record('click_nth', { selector: args.selector, index: args.index });
+            return { content: [{ type: 'text', text: 'Clicked ' + args.selector + ' at index ' + args.index + ' (of ' + count + ').' }] };
+        }
+
+        // ── New Tools: Visual Debug ─────────────────────────────────────────────
+        case 'browser_highlight': {
+            const color = args.color || 'red';
+            const duration = args.durationMs || 3000;
+            await page.evaluate(({ sel, clr, dur }) => {
+                const el = document.querySelector(sel);
+                if (!el) return;
+                const prev = el.style.outline;
+                el.style.transition = 'outline 0.2s ease';
+                el.style.outline = '3px solid ' + clr;
+                setTimeout(() => { el.style.outline = prev; }, dur);
+            }, { sel: args.selector, clr: color, dur: duration });
+            return { content: [{ type: 'text', text: 'Highlighted ' + args.selector + ' in ' + color + ' for ' + duration + 'ms.' }] };
+        }
+
+        // ── New Tools: Wait for Change ──────────────────────────────────────────
+        case 'browser_wait_for_change': {
+            const changeTimeout = args.timeout || 10000;
+            const attr = args.attribute || 'textContent';
+            try {
+                if (attr === 'textContent' || attr === 'innerText') {
+                    const initial = await page.locator(args.selector).first().textContent({ timeout: 3000 }) || '';
+                    await page.waitForFunction(
+                        ([sel, initialText, attribute]) => {
+                            const el = document.querySelector(sel);
+                            if (!el) return false;
+                            const current = attribute === 'innerText' ? el.innerText : el.textContent;
+                            return current !== initialText;
+                        },
+                        [args.selector, initial, attr],
+                        { timeout: changeTimeout }
+                    );
+                } else {
+                    const initial = await page.locator(args.selector).first().getAttribute(attr, { timeout: 3000 });
+                    await page.waitForFunction(
+                        ([sel, attributeName, initialValue]) => {
+                            const el = document.querySelector(sel);
+                            if (!el) return false;
+                            return el.getAttribute(attributeName) !== initialValue;
+                        },
+                        [args.selector, attr, initial],
+                        { timeout: changeTimeout }
+                    );
+                }
+                return { content: [{ type: 'text', text: args.selector + ' ' + attr + ' changed.' }] };
+            } catch (e) {
+                return { content: [{ type: 'text', text: 'Timeout waiting for ' + args.selector + ' ' + attr + ' to change.' }], isError: true };
+            }
         }
 
         default:

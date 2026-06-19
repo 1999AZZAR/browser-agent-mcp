@@ -3,6 +3,7 @@
 !/.gitattributes
 !/.dockerignore
 !/.env.example
+!/env.example
 !/.editorconfig
 !/.eslintrc*
 !/.prettierrc*
