@@ -1,6 +1,6 @@
-# General Browser Agent MCP
+# Browser-Agent
 
-A modular, production-ready browser automation agent implemented as a Model Context Protocol (MCP) server. Powered by Playwright, it provides a comprehensive toolset for human-like web interaction, state analysis, automated navigation, and network-level control.
+A modular, production-ready browser automation agent implemented as a Model Context Protocol (MCP) server. Powered by Playwright, it provides **88 tools** for human-like web interaction, state analysis, automated navigation, and network-level control.
 
 ## Features
 
@@ -22,6 +22,10 @@ A modular, production-ready browser automation agent implemented as a Model Cont
 - **OCR**: Extract text from code screenshots and images via Tesseract.js with preprocessing.
 - **Macro Recording & Replay**: Record workflows once, replay them with different parameters.
 - **Parallel Execution**: Run actions on multiple named pages concurrently.
+- **Assertions**: Verify outcomes without breaking flow — `browser_assert_visible`, `browser_assert_text`, `browser_assert_url` return PASS/FAIL.
+- **Perception Tools**: Read page content as structured Markdown or accessibility tree — no screenshots needed.
+- **Network Mocking**: Mock API responses for frontend testing without touching the backend.
+- **SSRF Protection**: Blocks navigation to `file://`, `javascript://`, private IPs, DNS rebinding, and cloud metadata endpoints.
 
 ## Demo
 
@@ -71,13 +75,34 @@ Named agents are independent pages within the same browser. Use them to parallel
 | Tool | Description |
 |------|-------------|
 | `browser_click_text` | Click element by visible text (smart button/link detection) |
+| `browser_click_nth` | Click the nth element matching a CSS selector (0-based index) |
 | `browser_fill_form` | Populate multiple fields at once from a `{selector: value}` object |
 | `browser_click` | Click by selector or `x, y` coordinates — includes smart retry with fallback selectors |
 | `browser_double_click` / `browser_right_click` | Pointer events |
 | `browser_hover` | Hover over an element or coordinates |
 | `browser_drag` | Drag source element to target |
+| `browser_upload` | Upload a file to an `<input type="file">` element |
 | `browser_scroll` / `browser_scroll_to` | Scroll by direction or to a target |
 | `browser_smart_scroll` | Incremental scroll to trigger lazy-loaded content |
+
+### Assertions
+
+Verify outcomes without breaking flow — each returns `[PASS]` or `[FAIL]`:
+
+| Tool | Description |
+|------|-------------|
+| `browser_assert_visible` | Assert that a selector is visible within timeout |
+| `browser_assert_text` | Assert that a selector contains specific text |
+| `browser_assert_url` | Assert that the URL matches a pattern (substring or regex) |
+
+**Example:**
+```
+browser_assert_visible("selector=button#submit", timeout=5000)
+→ [PASS] Button '#submit' is visible
+
+browser_assert_url("pattern=/dashboard")
+→ [PASS] URL contains '/dashboard'
+```
 
 ### Forms & Input
 
@@ -109,6 +134,8 @@ Named agents are independent pages within the same browser. Use them to parallel
 | `browser_console_messages` | Return captured browser console messages and JS errors (last 100). Filter by `type`. Pass `clear: true` to flush. |
 | `browser_network_requests` | Return captured network requests with status and timing (last 100). Filter by URL substring or `statusMin`. |
 | `browser_health` | Check browser health: context alive, page responsive, latency, active URL. Use to diagnose crashes or unresponsive pages. |
+| `browser_get_page_markdown` | Read page content as structured Markdown — headings, paragraphs, links, images. No screenshot needed. |
+| `browser_get_accessibility_tree` | Get the full accessibility tree (AX Tree) without a screenshot. Lightweight perception tool for structured data. |
 
 **`browser_evaluate` usage:**
 ```js
@@ -154,6 +181,27 @@ headers: { "Authorization": "Bearer <token>" }
 
 Rules persist across page navigations until `browser_clear_intercepts` is called.
 
+### Network Mocking
+
+Mock API responses without touching the backend — ideal for testing error states and edge cases:
+
+| Tool | Description |
+|------|-------------|
+| `browser_mock_network` | Mock responses for requests matching a URL pattern |
+| `browser_clear_mocks` | Remove all mock rules (keeps other intercept rules) |
+
+**Example:**
+```
+# Mock a 500 error
+browser_mock_network(pattern="**/api/users*", status=500, body={"error": "Internal Server Error"})
+
+# Mock a slow response
+browser_mock_network(pattern="**/api/data*", body={"data": [...]}, delay=3000)
+
+# Clear all mocks
+browser_clear_mocks()
+```
+
 ### Session & Profile Management
 
 | Tool | Description |
@@ -165,6 +213,9 @@ Rules persist across page navigations until `browser_clear_intercepts` is called
 | `browser_handle_captcha` | Detect and manage CAPTCHA with optional manual hand-off |
 | `browser_solve_captcha_grid` | Click specific grid cells in a visual CAPTCHA |
 | `browser_switch_to_new_tab` | Detect and switch to a newly opened tab/popup |
+| `browser_dialog` | Handle JavaScript `alert`, `confirm`, `prompt` dialogs (auto-dismissed by default) |
+| `browser_highlight` | Highlight element(s) by selector — visual debug overlay |
+| `browser_wait_for_change` | Wait for page title, URL, or element count to change (SPA detection) |
 | `browser_close` | Terminate the browser session and clear all state |
 
 ### Batch Automation
@@ -234,6 +285,7 @@ Register in your MCP client config:
 | `BROWSER_HEADLESS` | `false` | Set to `true` for headless operation (CI / production). |
 | `BROWSER_LAUNCH_RETRIES` | `3` | Number of retries on browser launch failure. |
 | `BROWSER_LAUNCH_BACKOFF` | `1000` | Base delay (ms) between launch retries; doubled each retry. |
+| `ALLOW_PRIVATE_IPS` | `false` | Allow navigation to private/internal IPs (localhost, 192.168.x, etc.) — SSRF protection is enabled by default. |
 
 ### Browser Stability
 
