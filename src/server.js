@@ -7,8 +7,7 @@
  * MCP Server entry point — exposes browser automation tools via Model Context
  * Protocol over stdio transport for CLI integration.
  */
-// MCP Server entry point — exposes browser automation tools via Model Context Protocol.
-// Uses stdio transport for CLI integration (e.g., Claude Code, opencode).
+require('dotenv').config();
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const { CallToolRequestSchema, ListToolsRequestSchema } = require('@modelcontextprotocol/sdk/types.js');
