@@ -31,6 +31,7 @@ try { Tesseract = require('tesseract.js'); } catch (_) { Tesseract = null; }
 
 // SSRF protection flag — set via environment or tool
 let allowPrivateIPs = process.env.ALLOW_PRIVATE_IPS === 'true';
+let allowAllSchemes = process.env.ALLOW_ALL_SCHEMES === 'true';
 
 // Behavioral profile controls timing and mouse movement patterns.
 // 'stealth' adds human-like jitter and delays to avoid bot detection.
@@ -1081,7 +1082,7 @@ async function handleToolCall(name, args) {
         case 'browser_navigate': {
             // SSRF protection — validate URL before navigation
             try {
-                validateURL(args.url, { allowPrivate: allowPrivateIPs });
+                validateURL(args.url, { allowPrivate: allowPrivateIPs, allowAllSchemes });
             } catch (e) {
                 return { content: [{ type: 'text', text: `URL blocked: ${e.message}` }], isError: true };
             }

@@ -286,6 +286,7 @@ Register in your MCP client config:
 | `BROWSER_LAUNCH_RETRIES` | `3` | Number of retries on browser launch failure. |
 | `BROWSER_LAUNCH_BACKOFF` | `1000` | Base delay (ms) between launch retries; doubled each retry. |
 | `ALLOW_PRIVATE_IPS` | `false` | Allow navigation to private/internal IPs (localhost, 192.168.x, etc.) — SSRF protection is enabled by default. |
+| `ALLOW_ALL_SCHEMES` | `false` | Allow all URL schemes (`file://`, `data://`, `javascript://`, etc.) — only `http`/`https` allowed by default. |
 
 ### Browser Stability
 

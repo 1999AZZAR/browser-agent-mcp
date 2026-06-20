@@ -76,7 +76,7 @@ function isPrivateIP(ipStr) {
     return false;
 }
 
-function validateURL(urlStr, { allowPrivate = false } = {}) {
+function validateURL(urlStr, { allowPrivate = false, allowAllSchemes = false } = {}) {
     let parsed;
     try {
         parsed = new URL(urlStr);
@@ -85,10 +85,10 @@ function validateURL(urlStr, { allowPrivate = false } = {}) {
     }
 
     const scheme = parsed.protocol.replace(':', '').toLowerCase();
-    if (BLOCKED_SCHEMES.has(scheme)) {
+    if (!allowAllSchemes && BLOCKED_SCHEMES.has(scheme)) {
         throw new Error(`Forbidden scheme: ${scheme}`);
     }
-    if (scheme !== 'http' && scheme !== 'https') {
+    if (!allowAllSchemes && scheme !== 'http' && scheme !== 'https') {
         throw new Error(`Unsupported scheme: ${scheme} (use http or https)`);
     }
 
