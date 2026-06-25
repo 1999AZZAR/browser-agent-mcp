@@ -5,7 +5,7 @@ description: "Professional browser automation agent for web navigation, interact
 
 # Browser Agent
 
-The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **76 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
+The skill is the entry point. The power is in `mcp__browser-agent__*` tools — **92 tools** covering the full Playwright API over CDP. Always call MCP tools directly; this skill maps task types to exact calls.
 
 ## Companion MCPs
 
@@ -71,7 +71,7 @@ This browser agent works best paired with other MCPs for full power:
 | Network request log | `browser_network_requests(filter, statusMin=400, maxLines=200)` | — |
 | Browser health check | `browser_health()` | — |
 | Structured data extraction | `browser_extract_schema(schema)` | `browser_extract_table(selector)` |
-| Core Web Vitals + timing | `browser_performance()` | — |
+| Core Web Vitals + timing + memory | `browser_performance()` | — |
 | Validate outcome (planner-validator) | `browser_assert(condition)` | — |
 | Generate Playwright test from session | `browser_generate_playwright_test()` | — |
 | Start fresh recording | `browser_clear_recording()` | — |
@@ -98,6 +98,10 @@ This browser agent works best paired with other MCPs for full power:
 | Click Nth match | `browser_click_nth(selector, index)` | `browser_click(selector)` with specific selector |
 | Highlight element | `browser_highlight(selector, color?)` | `browser_screenshot()` without highlight |
 | Wait for content change | `browser_wait_for_change(selector)` | `browser_wait(ms)` + poll |
+| Emulate conditions | `browser_emulate(networkProfile, cpuThrottlingRate, ...)` | — |
+| Resize viewport size | `browser_resize_page(width, height)` | — |
+| Start trace recording | `browser_start_trace(screenshots, snapshots)` | — |
+| Stop trace recording | `browser_stop_trace(outputPath)` | — |
 
 ## Wait Strategy Guide
 
@@ -477,3 +481,33 @@ browser_get_text("#results")  // now contains updated data
 - After clicking buttons that update content
 - After form submissions that update a section
 - When content loads asynchronously (not full page navigation)
+
+## Emulation & Performance Profiling
+
+Configure viewport, CPU, network profiles, and record traces.
+
+### Viewport Resizing:
+```js
+browser_resize_page(width=375, height=812) // Resize page for mobile viewport testing
+```
+
+### Trace Recording:
+```js
+// 1. Start recording trace
+browser_start_trace(screenshots=true, snapshots=true)
+
+// 2. Interact with the website / perform actions
+
+// 3. Stop trace and save zip archive
+browser_stop_trace(outputPath="/absolute/path/to/trace.zip")
+```
+
+### CPU & Network Emulation:
+```js
+browser_emulate(
+  networkProfile="Slow 3G", // 'no-throttling' | 'offline' | 'Slow 3G' | 'Fast 3G'
+  cpuThrottlingRate=4,       // slowdown multiplier
+  colorScheme="dark"         // 'light' | 'dark' | 'no-preference'
+)
+```
+
