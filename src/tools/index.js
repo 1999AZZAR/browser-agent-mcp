@@ -9,6 +9,7 @@
  */
 const {
     getPage, closeBrowser, listPages, switchPage, newPage,
+    getBrowserContext,
     addRoute, clearRoutes, listRoutes,
     createNamedPage, switchToNamedPage, removeNamedPage, listNamedPages,
     saveState,
@@ -45,6 +46,7 @@ const AGENT_CONFIG = {
 let capturedAPIs = [];
 let apiCaptureActive = false;
 let apiCapturePattern = null;
+let isTracingRunning = false;
 
 const TOOLS = [
     // ── Navigation & Tabs ─────────────────────────────────────────────────────
@@ -1071,6 +1073,84 @@ const TOOLS = [
             },
             required: ['selector'],
         },
+    },
+
+    // ── Emulation & Viewport ──────────────────────────────────────────────────
+    {
+        name: 'browser_emulate',
+        description: 'Emulate network conditions, CPU throttling, geolocation, locale, timezone, and color scheme.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                networkProfile: {
+                    type: 'string',
+                    enum: ['no-throttling', 'offline', 'Slow 3G', 'Fast 3G'],
+                    description: 'Standard network throttling profile to apply.'
+                },
+                cpuThrottlingRate: {
+                    type: 'number',
+                    description: 'CPU throttling rate multiplier (e.g. 2 for 2x slowdown, 4 for 4x slowdown). Use 1 or null to disable.'
+                },
+                geolocation: {
+                    type: 'object',
+                    properties: {
+                        latitude: { type: 'number' },
+                        longitude: { type: 'number' },
+                        accuracy: { type: 'number', default: 100 }
+                    },
+                    required: ['latitude', 'longitude'],
+                    description: 'Geolocation coordinates to emulate.'
+                },
+                colorScheme: {
+                    type: 'string',
+                    enum: ['light', 'dark', 'no-preference'],
+                    description: 'Emulate prefer-color-scheme media query.'
+                },
+                timezoneId: {
+                    type: 'string',
+                    description: 'Emulate timezone (e.g., "America/New_York", "Europe/London").'
+                },
+                locale: {
+                    type: 'string',
+                    description: 'Emulate locale (e.g., "en-US", "fr-FR").'
+                }
+            }
+        }
+    },
+    {
+        name: 'browser_resize_page',
+        description: 'Set viewport width and height dynamically on the active page.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                width: { type: 'number', description: 'Viewport width in pixels' },
+                height: { type: 'number', description: 'Viewport height in pixels' }
+            },
+            required: ['width', 'height']
+        }
+    },
+
+    // ── Playwright Trace Recording ───────────────────────────────────────────
+    {
+        name: 'browser_start_trace',
+        description: 'Start recording a detailed Playwright trace including screenshots, snapshots, and network events.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                screenshots: { type: 'boolean', default: true, description: 'Whether to capture screenshots during tracing.' },
+                snapshots: { type: 'boolean', default: true, description: 'Whether to capture DOM snapshots during tracing.' }
+            }
+        }
+    },
+    {
+        name: 'browser_stop_trace',
+        description: 'Stop recording trace and save zip file. Defaults to exports/trace-<timestamp>.zip.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                outputPath: { type: 'string', description: 'Absolute path for the zip file. Defaults to exports/trace-<timestamp>.zip.' }
+            }
+        }
     },
 ];
 
@@ -2641,6 +2721,7 @@ async function handleToolCall(name, args) {
                         performance.getEntriesByType('paint').map(e => [e.name.replace('first-', ''), Math.round(e.startTime)])
                     );
                     const resources = performance.getEntriesByType('resource');
+                    const mem = performance.memory || {};
                     return {
                         domContentLoaded: Math.round(nav.domContentLoadedEventEnd - nav.fetchStart) || null,
                         load: Math.round(nav.loadEventEnd - nav.fetchStart) || null,
@@ -2648,6 +2729,11 @@ async function handleToolCall(name, args) {
                         paint,
                         resourceCount: resources.length,
                         transferSize: Math.round(resources.reduce((s, r) => s + (r.transferSize || 0), 0) / 1024),
+                        memory: mem.usedJSHeapSize ? {
+                            usedJSHeapSize: Math.round(mem.usedJSHeapSize / 1024 / 1024 * 100) / 100, // MB
+                            totalJSHeapSize: Math.round(mem.totalJSHeapSize / 1024 / 1024 * 100) / 100, // MB
+                            jsHeapSizeLimit: Math.round(mem.jsHeapSizeLimit / 1024 / 1024 * 100) / 100 // MB
+                        } : null
                     };
                 }),
                 page.evaluate(() => new Promise(resolve => {
@@ -2989,6 +3075,103 @@ async function handleToolCall(name, args) {
             } catch (e) {
                 return { content: [{ type: 'text', text: 'Timeout waiting for ' + args.selector + ' ' + attr + ' to change.' }], isError: true };
             }
+        }
+
+        // ── Emulation & Viewport ──────────────────────────────────────────────────
+        case 'browser_emulate': {
+            const ctx = await getBrowserContext();
+            
+            // 1. Geolocation
+            if (args.geolocation) {
+                await ctx.setGeolocation({
+                    latitude: args.geolocation.latitude,
+                    longitude: args.geolocation.longitude,
+                    accuracy: args.geolocation.accuracy ?? 100
+                });
+                await ctx.grantPermissions(['geolocation']);
+            }
+
+            // 2. Color Scheme
+            if (args.colorScheme) {
+                await page.emulateMedia({ colorScheme: args.colorScheme });
+            }
+
+            // 3. CDP-specific emulation (CPU, Network, Timezone, Locale)
+            const client = await ctx.newCDPSession(page);
+            
+            if (args.cpuThrottlingRate) {
+                await client.send('Emulation.setCPUThrottlingRate', { rate: args.cpuThrottlingRate });
+            }
+
+            if (args.timezoneId) {
+                await client.send('Emulation.setTimezoneOverride', { timezoneId: args.timezoneId });
+            }
+
+            if (args.locale) {
+                await client.send('Emulation.setLocaleOverride', { locale: args.locale });
+            }
+
+            if (args.networkProfile) {
+                let conditions = { offline: false, downloadThroughput: -1, uploadThroughput: -1, latency: 0 };
+                if (args.networkProfile === 'offline') {
+                    conditions = { offline: true, downloadThroughput: 0, uploadThroughput: 0, latency: 0 };
+                } else if (args.networkProfile === 'Slow 3G') {
+                    conditions = {
+                        offline: false,
+                        downloadThroughput: Math.round(400 * 1024 / 8),
+                        uploadThroughput: Math.round(400 * 1024 / 8),
+                        latency: 400
+                    };
+                } else if (args.networkProfile === 'Fast 3G') {
+                    conditions = {
+                        offline: false,
+                        downloadThroughput: Math.round(1.6 * 1024 * 1024 / 8),
+                        uploadThroughput: Math.round(750 * 1024 / 8),
+                        latency: 150
+                    };
+                }
+                await client.send('Network.enable');
+                await client.send('Network.emulateNetworkConditions', conditions);
+            }
+
+            return { content: [{ type: 'text', text: 'Emulation settings successfully applied.' }] };
+        }
+
+        case 'browser_resize_page': {
+            const width = args.width;
+            const height = args.height;
+            if (typeof width !== 'number' || typeof height !== 'number' || width <= 0 || height <= 0) {
+                return { content: [{ type: 'text', text: 'Invalid width or height parameters.' }], isError: true };
+            }
+            await page.setViewportSize({ width, height });
+            return { content: [{ type: 'text', text: 'Resized page viewport to ' + width + 'x' + height + '.' }] };
+        }
+
+        // ── Playwright Trace Recording ───────────────────────────────────────────
+        case 'browser_start_trace': {
+            const ctx = await getBrowserContext();
+            const screenshots = args.screenshots !== false;
+            const snapshots = args.snapshots !== false;
+            await ctx.tracing.start({ name: 'mcp-trace', screenshots, snapshots, sources: true });
+            isTracingRunning = true;
+            return { content: [{ type: 'text', text: 'Started browser trace recording (screenshots: ' + screenshots + ', snapshots: ' + snapshots + ').' }] };
+        }
+
+        case 'browser_stop_trace': {
+            if (!isTracingRunning) {
+                return { content: [{ type: 'text', text: 'No active trace recording found. Call browser_start_trace first.' }], isError: true };
+            }
+            const ctx = await getBrowserContext();
+            const exportDir = path.join(__dirname, '../../exports');
+            if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
+
+            const outputPath = args.outputPath || path.join(exportDir, `trace-${Date.now()}.zip`);
+            const dir = path.dirname(outputPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+            await ctx.tracing.stop({ path: outputPath });
+            isTracingRunning = false;
+            return { content: [{ type: 'text', text: 'Stopped trace recording. Trace saved to: ' + outputPath }] };
         }
 
         default:
